@@ -12,11 +12,12 @@ stubs and are never required.
 Usage:
 
     uv run agenteval.py run scenarios.yaml --agent myagent:agent
+    uv run agenteval.py run scenarios.yaml --target http://localhost:8000/agent
 
 Exit codes:
     0  pass (or baseline created / explicitly updated)
     1  regression vs baseline (or missing scenarios with --fail-on-missing)
-    2  invalid scenario file
+    2  invalid scenario file / invalid config / missing required baseline
     3  agent import failure
     4  internal unexpected error
 """
@@ -30,6 +31,9 @@ import re
 import sys
 import time
 import traceback
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,6 +47,8 @@ EXIT_INTERNAL = 4
 
 BASELINE_VERSION = 1
 DEFAULT_BASELINE = ".agenteval/baseline.json"
+DEFAULT_CONFIG_FILE = ".agenteval.yaml"
+HTTP_TIMEOUT_S = 30
 
 DETERMINISTIC_TYPES = {
     "contains",
@@ -71,6 +77,11 @@ class ScenarioError(Exception):
 
 class AgentLoadError(Exception):
     """The --agent module:function spec could not be imported/resolved."""
+
+
+class ConfigError(Exception):
+    """Invalid CLI flag combination, config file, filter selection, or missing
+    required baseline. Maps to exit 2, same as an invalid scenario file."""
 
 
 def _utcnow() -> str:
@@ -112,6 +123,27 @@ def load_scenarios(path: Path) -> list[dict]:
         seen_ids.add(sid)
         if not isinstance(scenario.get("input"), str):
             raise ScenarioError(f"{where} ('{sid}'): missing required string field 'input'")
+        if "tags" in scenario and (
+            not isinstance(scenario["tags"], list)
+            or not all(isinstance(t, str) for t in scenario["tags"])
+        ):
+            raise ScenarioError(f"{where} ('{sid}'): 'tags' must be a list of strings")
+        if "skip" in scenario and not isinstance(scenario["skip"], bool):
+            raise ScenarioError(f"{where} ('{sid}'): 'skip' must be a boolean")
+        if "skip_reason" in scenario and not isinstance(scenario["skip_reason"], str):
+            raise ScenarioError(f"{where} ('{sid}'): 'skip_reason' must be a string")
+        if "runs" in scenario and (
+            not isinstance(scenario["runs"], int)
+            or isinstance(scenario["runs"], bool)
+            or scenario["runs"] < 1
+        ):
+            raise ScenarioError(f"{where} ('{sid}'): 'runs' must be an integer >= 1")
+        if "min_pass_rate" in scenario:
+            mpr = scenario["min_pass_rate"]
+            if isinstance(mpr, bool) or not isinstance(mpr, (int, float)) or not 0 <= mpr <= 1:
+                raise ScenarioError(
+                    f"{where} ('{sid}'): 'min_pass_rate' must be a number between 0 and 1"
+                )
         assertions = scenario.get("assert")
         if not isinstance(assertions, list) or not assertions:
             raise ScenarioError(
@@ -134,6 +166,49 @@ def load_scenarios(path: Path) -> list[dict]:
             if a_type in REQUIRES_INT_VALUE and not isinstance(assertion.get("value"), int):
                 raise ScenarioError(f"{a_where}: '{a_type}' requires an integer 'value'")
     return data
+
+
+def select_scenarios(
+    scenarios: list[dict],
+    ids: list[str] | None = None,
+    include_tags: list[str] | None = None,
+    exclude_tags: list[str] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Apply --scenario/--include-tag/--exclude-tag filters and skip: flags.
+
+    Returns (to_run, skipped). Raises ConfigError if nothing runnable remains.
+    """
+    if ids:
+        known = {s["id"] for s in scenarios}
+        unknown = [i for i in ids if i not in known]
+        if unknown:
+            raise ConfigError(
+                f"--scenario id(s) not found in scenario file: {', '.join(unknown)}"
+            )
+        wanted = set(ids)
+        scenarios = [s for s in scenarios if s["id"] in wanted]
+    if include_tags:
+        inc = set(include_tags)
+        scenarios = [s for s in scenarios if inc & set(s.get("tags", []))]
+    if exclude_tags:
+        exc = set(exclude_tags)
+        scenarios = [s for s in scenarios if not exc & set(s.get("tags", []))]
+    to_run = [s for s in scenarios if not s.get("skip", False)]
+    skipped = [s for s in scenarios if s.get("skip", False)]
+    if not to_run:
+        raise ConfigError(
+            "no runnable scenarios after filtering "
+            "(check --scenario/--include-tag/--exclude-tag and 'skip:' flags)"
+        )
+    return to_run, skipped
+
+
+def effective_runs(scenario: dict, cli_runs: int | None) -> int:
+    """Runs precedence: explicit --runs (CLI or config) overrides scenario
+    'runs'; otherwise scenario 'runs'; otherwise 1."""
+    if cli_runs is not None:
+        return cli_runs
+    return scenario.get("runs", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +235,49 @@ def load_agent(spec: str):
     if not callable(fn):
         raise AgentLoadError(f"'{spec}' is not callable")
     return fn
+
+
+# ---------------------------------------------------------------------------
+# HTTP target adapter (stdlib urllib; no requests/httpx dependency)
+# ---------------------------------------------------------------------------
+
+def normalize_http_response(status: int, body: str) -> dict:
+    """Map an HTTP response onto the result shape assertions understand.
+
+    JSON dicts pass through (output/tool_calls/steps score as usual); anything
+    else becomes {"output": <text>}. http_status is always attached.
+    """
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return {"output": body, "http_status": status}
+    if isinstance(parsed, dict):
+        result = dict(parsed)
+        result.setdefault("output", body)
+        result["http_status"] = status
+        return result
+    return {"output": body, "http_status": status}
+
+
+def make_http_agent(url: str, input_key: str = "input"):
+    """Return an agent callable that POSTs {input_key: user_input} to url."""
+
+    def call_http_agent(user_input: str) -> dict:
+        payload = json.dumps({input_key: user_input}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
+                status = resp.status
+                body = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            # Non-2xx is a scenario failure with a useful message, not a crash.
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code} from {url}: {err_body[:500]}") from exc
+        return normalize_http_response(status, body)
+
+    return call_http_agent
 
 
 # ---------------------------------------------------------------------------
@@ -365,12 +483,17 @@ def run_scenario(scenario: dict, agent_fn, runs: int) -> dict:
             for ar in record["assertions"]
             if ar["key"] == key
         )
+    pass_rate = passed_runs / runs
+    min_pass_rate = float(scenario.get("min_pass_rate", 1.0))
     return {
         "id": scenario["id"],
         "input": scenario["input"],
+        "tags": scenario.get("tags", []),
         "runs": runs,
         "passed_runs": passed_runs,
-        "pass_rate": passed_runs / runs,
+        "pass_rate": pass_rate,
+        "min_pass_rate": min_pass_rate,
+        "passed": pass_rate >= min_pass_rate,
         "assertions": assertions_summary,
         "run_records": run_records,
     }
@@ -387,6 +510,8 @@ def build_baseline(scenario_results: list[dict]) -> dict:
         "scenarios": {
             sr["id"]: {
                 "pass_rate": sr["pass_rate"],
+                "min_pass_rate": sr["min_pass_rate"],
+                "passed": sr["passed"],
                 "runs": sr["runs"],
                 "assertions": sr["assertions"],
             }
@@ -395,9 +520,26 @@ def build_baseline(scenario_results: list[dict]) -> dict:
     }
 
 
-def write_baseline(path: Path, scenario_results: list[dict]) -> None:
+def write_baseline(
+    path: Path,
+    scenario_results: list[dict],
+    existing: dict | None = None,
+    file_ids: set[str] | None = None,
+) -> None:
+    """Write the baseline. When updating an existing baseline (--update-baseline),
+    merge: keep entries for scenarios still in the file but not run this time
+    (filtered/skipped), drop entries removed from the file, overwrite what ran.
+    """
+    baseline = build_baseline(scenario_results)
+    if existing is not None:
+        keep = file_ids if file_ids is not None else set(existing["scenarios"])
+        merged = {
+            sid: entry for sid, entry in existing["scenarios"].items() if sid in keep
+        }
+        merged.update(baseline["scenarios"])
+        baseline["scenarios"] = merged
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(build_baseline(scenario_results), indent=2) + "\n")
+    path.write_text(json.dumps(baseline, indent=2) + "\n")
 
 
 def load_baseline(path: Path) -> dict:
@@ -413,12 +555,20 @@ def load_baseline(path: Path) -> dict:
     return data
 
 
-def diff_against_baseline(baseline: dict, scenario_results: list[dict]) -> tuple[bool, list[dict]]:
-    """Compare current results to baseline. Returns (regressed, events)."""
+def diff_against_baseline(
+    baseline: dict,
+    scenario_results: list[dict],
+    file_ids: set[str] | None = None,
+) -> tuple[bool, list[dict]]:
+    """Compare current results to baseline. Returns (regressed, events).
+
+    file_ids is every scenario id present in the scenario file (including
+    filtered-out and skipped ones): a baseline scenario is MISSING only if it
+    left the file, never because a filter deselected it this run.
+    """
     events: list[dict] = []
     regressed = False
     base_scenarios = baseline["scenarios"]
-    current_ids = {sr["id"] for sr in scenario_results}
 
     for sr in scenario_results:
         sid = sr["id"]
@@ -427,6 +577,22 @@ def diff_against_baseline(baseline: dict, scenario_results: list[dict]) -> tuple
             continue
         base = base_scenarios[sid]
         base_rate = base.get("pass_rate", 0.0)
+        if sr["min_pass_rate"] < 1.0:
+            # Thresholded scenario: pass-rate dips above the threshold are
+            # tolerated flakiness, not regressions. Regression = the scenario
+            # met its threshold in the baseline and misses it now.
+            base_passed = base.get("passed", base_rate >= sr["min_pass_rate"])
+            if base_passed and not sr["passed"]:
+                regressed = True
+                events.append(
+                    {
+                        "kind": "regressed",
+                        "scenario_id": sid,
+                        "baseline_pass_rate": base_rate,
+                        "current_pass_rate": sr["pass_rate"],
+                    }
+                )
+            continue
         if sr["pass_rate"] < base_rate:
             regressed = True
             events.append(
@@ -442,8 +608,9 @@ def diff_against_baseline(baseline: dict, scenario_results: list[dict]) -> tuple
                 regressed = True
                 events.append({"kind": "assertion_regressed", "scenario_id": sid, "assertion": key})
 
+    considered = file_ids if file_ids is not None else {sr["id"] for sr in scenario_results}
     for sid in base_scenarios:
-        if sid not in current_ids:
+        if sid not in considered:
             events.append({"kind": "missing", "scenario_id": sid})
     return regressed, events
 
@@ -452,33 +619,54 @@ def diff_against_baseline(baseline: dict, scenario_results: list[dict]) -> tuple
 # Reporting
 # ---------------------------------------------------------------------------
 
-def print_report(scenario_results: list[dict], events: list[dict], status: str,
-                 baseline_path: Path, overall_pass_rate: float, exit_code: int) -> None:
+def format_event(ev: dict) -> str:
+    if ev["kind"] == "regressed":
+        return (
+            f"REGRESSED {ev['scenario_id']} "
+            f"{_pct(ev['baseline_pass_rate'])} -> {_pct(ev['current_pass_rate'])}"
+        )
+    if ev["kind"] == "assertion_regressed":
+        return (
+            f"REGRESSED {ev['scenario_id']} assertion {ev['assertion']}: "
+            f"was passing in baseline, now failing"
+        )
+    if ev["kind"] == "new":
+        return f"NEW {ev['scenario_id']} (not in baseline; add with --update-baseline)"
+    if ev["kind"] == "missing":
+        return f"MISSING {ev['scenario_id']} (in baseline but not in current scenario file)"
+    return f"{ev['kind'].upper()} {ev.get('scenario_id', '')}"
+
+
+def failed_assertion_details(sr: dict) -> list[dict]:
+    """Failed assertion results from the first failing run of a scenario."""
+    first_failed = next((r for r in sr["run_records"] if not r["passed"]), None)
+    if first_failed is None:
+        return []
+    return [ar for ar in first_failed["assertions"] if not ar["passed"]]
+
+
+def print_report(scenario_results: list[dict], skipped: list[dict], events: list[dict],
+                 status: str, baseline_path: Path, overall_pass_rate: float,
+                 exit_code: int) -> None:
     for sr in scenario_results:
-        word = "PASS" if sr["pass_rate"] == 1.0 else "FAIL"
-        print(f"{word} {sr['id']} {sr['passed_runs']}/{sr['runs']} runs passed")
-        if sr["pass_rate"] < 1.0:
-            first_failed = next(r for r in sr["run_records"] if not r["passed"])
-            for ar in first_failed["assertions"]:
-                if not ar["passed"]:
-                    print(f"    FAILED {ar['key']}: {ar['reason']}")
+        word = "PASS" if sr["passed"] else "FAIL"
+        threshold = f" (min_pass_rate {sr['min_pass_rate']})" if sr["min_pass_rate"] < 1.0 else ""
+        print(f"{word} {sr['id']} {sr['passed_runs']}/{sr['runs']} runs passed{threshold}")
+        if not sr["passed"]:
+            for ar in failed_assertion_details(sr):
+                print(f"    FAILED {ar['key']}: {ar['reason']}")
+
+    for sk in skipped:
+        reason = f" ({sk['skip_reason']})" if sk.get("skip_reason") else ""
+        print(f"SKIP {sk['id']}{reason}")
 
     for ev in events:
-        if ev["kind"] == "regressed":
-            print(
-                f"REGRESSED {ev['scenario_id']} "
-                f"{_pct(ev['baseline_pass_rate'])} -> {_pct(ev['current_pass_rate'])}"
-            )
-        elif ev["kind"] == "assertion_regressed":
-            print(
-                f"REGRESSED {ev['scenario_id']} assertion {ev['assertion']}: "
-                f"was passing in baseline, now failing"
-            )
-        elif ev["kind"] == "new":
-            print(f"NEW {ev['scenario_id']} (not in baseline; add with --update-baseline)")
-        elif ev["kind"] == "missing":
-            print(f"MISSING {ev['scenario_id']} (in baseline but not in current scenario file)")
+        print(format_event(ev))
 
+    _print_overall(status, baseline_path, scenario_results, overall_pass_rate, exit_code)
+
+
+def _print_overall(status, baseline_path, scenario_results, overall_pass_rate, exit_code):
     if status == "baseline_created":
         print(f"Baseline created: {baseline_path} ({len(scenario_results)} scenario(s))")
         print(f"Overall: BASELINE CREATED ({_pct(overall_pass_rate)} pass rate recorded)")
@@ -495,6 +683,205 @@ def print_report(scenario_results: list[dict], events: list[dict], status: str,
         print(f"Exit: {exit_code}")
 
 
+def write_junit(path: Path, scenario_results: list[dict], skipped: list[dict],
+                agent_label: str, duration_s: float) -> None:
+    """JUnit XML via stdlib ElementTree: one testsuite, one testcase per
+    scenario. Assertion failures -> <failure>, agent exceptions -> <error>,
+    skip: scenarios -> <skipped>."""
+    failures = errors = 0
+    suite = ET.Element("testsuite")
+    for sr in scenario_results:
+        case_time = sum(r["duration_ms"] for r in sr["run_records"]) / 1000
+        case = ET.SubElement(
+            suite, "testcase", classname="agenteval", name=sr["id"], time=f"{case_time:.3f}"
+        )
+        if sr["passed"]:
+            continue
+        run_errors = [r["error"] for r in sr["run_records"] if r["error"]]
+        tag = "error" if run_errors else "failure"
+        if tag == "error":
+            errors += 1
+        else:
+            failures += 1
+        lines = [
+            f"scenario {sr['id']}: {sr['passed_runs']}/{sr['runs']} runs passed "
+            f"(min_pass_rate {sr['min_pass_rate']})"
+        ]
+        for err in dict.fromkeys(run_errors):
+            lines.append(f"agent error: {err}")
+        for ar in failed_assertion_details(sr):
+            lines.append(
+                f"{ar['key']}: expected={ar['expected']!r} "
+                f"observed={ar['observed']!r} reason={ar['reason']}"
+            )
+        el = ET.SubElement(
+            case, tag, message=f"{sr['passed_runs']}/{sr['runs']} runs passed"
+        )
+        el.text = "\n".join(lines)
+    for sk in skipped:
+        case = ET.SubElement(
+            suite, "testcase", classname="agenteval", name=sk["id"], time="0.000"
+        )
+        ET.SubElement(case, "skipped", message=sk.get("skip_reason") or "skipped")
+
+    suite.set("name", f"agenteval: {agent_label}")
+    suite.set("tests", str(len(scenario_results) + len(skipped)))
+    suite.set("failures", str(failures))
+    suite.set("errors", str(errors))
+    suite.set("skipped", str(len(skipped)))
+    suite.set("time", f"{duration_s:.3f}")
+
+    tree = ET.ElementTree(suite)
+    ET.indent(tree)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def render_markdown(artifact: dict) -> str:
+    scenario_results = artifact["scenarios"]
+    skipped = artifact["skipped"]
+    events = artifact["comparison"]["events"]
+    lines = [
+        "# AgentEval Report",
+        "",
+        f"- Status: **{artifact['status'].upper()}**",
+        f"- Agent: `{artifact['agent'] or artifact['target']}`",
+        f"- Scenarios file: `{artifact['scenarios_file']}`",
+        f"- Baseline: `{artifact['baseline']['path']}`",
+        f"- Overall pass rate: {_pct(artifact['overall_pass_rate'])}",
+        f"- Scenarios: {artifact['scenario_count']} run, {len(skipped)} skipped",
+        f"- Total runs: {artifact['total_runs']}",
+        f"- Started: {artifact['started_at']}",
+        f"- Completed: {artifact['completed_at']} ({artifact['duration_ms']} ms)",
+        f"- Exit code: {artifact['exit_code']}",
+        "",
+        "## Summary",
+        "",
+        "| Scenario | Result | Runs Passed | Pass Rate |",
+        "|---|---:|---:|---:|",
+    ]
+    for sr in scenario_results:
+        word = "PASS" if sr["passed"] else "FAIL"
+        lines.append(
+            f"| {sr['id']} | {word} | {sr['passed_runs']}/{sr['runs']} | {_pct(sr['pass_rate'])} |"
+        )
+    for sk in skipped:
+        lines.append(f"| {sk['id']} | SKIP | - | - |")
+
+    if events:
+        lines += ["", "## Comparison Events", ""]
+        lines += [f"- {format_event(ev)}" for ev in events]
+
+    failed = [sr for sr in scenario_results if not sr["passed"]]
+    if failed:
+        lines += ["", "## Failed Assertions", ""]
+        for sr in failed:
+            lines.append(f"### {sr['id']}")
+            lines.append("")
+            run_errors = list(dict.fromkeys(r["error"] for r in sr["run_records"] if r["error"]))
+            for err in run_errors:
+                lines.append(f"- agent error: `{err}`")
+            for ar in failed_assertion_details(sr):
+                lines.append(
+                    f"- {ar['type']}: expected `{ar['expected']!r}`, "
+                    f"observed `{ar['observed']!r}` — {ar['reason']}"
+                )
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_markdown(path: Path, artifact: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_markdown(artifact))
+
+
+# ---------------------------------------------------------------------------
+# Config file (--config or auto-discovered .agenteval.yaml)
+# ---------------------------------------------------------------------------
+
+CONFIG_SCHEMA: dict[str, type] = {
+    "baseline": str,
+    "require_baseline": bool,
+    "fail_on_missing": bool,
+    "runs": int,
+    "json_out": str,
+    "junit_out": str,
+    "markdown_out": str,
+    "include_tags": list,
+    "exclude_tags": list,
+    "http_input_key": str,
+}
+
+
+def load_config(path: Path | None) -> dict:
+    """Load and validate a config file. Explicit missing path is an error;
+    absent default file just means no config."""
+    if path is None:
+        path = Path(DEFAULT_CONFIG_FILE)
+        if not path.exists():
+            return {}
+    elif not path.exists():
+        raise ConfigError(f"config file not found: {path}")
+    try:
+        data = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"could not parse config {path}: {exc}") from exc
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path}: config must be a mapping, got {type(data).__name__}")
+    for key, value in data.items():
+        expected = CONFIG_SCHEMA.get(key)
+        if expected is None:
+            raise ConfigError(
+                f"{path}: unknown config key {key!r}; "
+                f"known keys: {', '.join(sorted(CONFIG_SCHEMA))}"
+            )
+        if not isinstance(value, expected) or (isinstance(value, bool) and expected is not bool):
+            raise ConfigError(f"{path}: config key {key!r} must be a {expected.__name__}")
+        if expected is list and not all(isinstance(v, str) for v in value):
+            raise ConfigError(f"{path}: config key {key!r} must be a list of strings")
+    if "runs" in data and data["runs"] < 1:
+        raise ConfigError(f"{path}: config key 'runs' must be >= 1")
+    return data
+
+
+def resolve_settings(args: argparse.Namespace) -> dict:
+    """Merge CLI flags over config-file values into one settings dict.
+    CLI always wins; config supplies defaults; hard defaults last."""
+    config = load_config(Path(args.config) if args.config else None)
+
+    def pick(cli_value, key, default=None):
+        return cli_value if cli_value is not None else config.get(key, default)
+
+    settings = {
+        "scenarios": args.scenarios,
+        "agent": args.agent,
+        "target": args.target,
+        "http_input_key": pick(args.http_input_key, "http_input_key", "input"),
+        "baseline": pick(args.baseline, "baseline", DEFAULT_BASELINE),
+        "json_out": pick(args.json_out, "json_out"),
+        "junit_out": pick(args.junit_out, "junit_out"),
+        "markdown_out": pick(args.markdown_out, "markdown_out"),
+        "runs": pick(args.runs, "runs"),
+        "require_baseline": args.require_baseline or config.get("require_baseline", False),
+        "fail_on_missing": args.fail_on_missing or config.get("fail_on_missing", False),
+        "update_baseline": args.update_baseline,
+        "scenario_ids": args.scenario,
+        "include_tags": pick(args.include_tag, "include_tags"),
+        "exclude_tags": pick(args.exclude_tag, "exclude_tags"),
+    }
+    if settings["agent"] and settings["target"]:
+        raise ConfigError("--agent and --target are mutually exclusive; pass exactly one")
+    if not settings["agent"] and not settings["target"]:
+        raise ConfigError("one of --agent (module:function) or --target (URL) is required")
+    if settings["target"] and not settings["target"].startswith(("http://", "https://")):
+        raise ConfigError(f"--target must be an http(s) URL, got {settings['target']!r}")
+    if settings["runs"] is not None and settings["runs"] < 1:
+        raise ConfigError("--runs must be >= 1")
+    return settings
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -503,16 +890,35 @@ def cmd_run(args: argparse.Namespace) -> int:
     started_at = _utcnow()
     t0 = time.perf_counter()
 
-    scenarios = load_scenarios(Path(args.scenarios))  # ScenarioError -> exit 2
-    agent_fn = load_agent(args.agent)  # AgentLoadError -> exit 3
-    runs = args.runs
+    settings = resolve_settings(args)  # ConfigError -> exit 2
+    scenarios = load_scenarios(Path(settings["scenarios"]))  # ScenarioError -> exit 2
+    file_ids = {s["id"] for s in scenarios}
+    to_run, skipped_scenarios = select_scenarios(
+        scenarios, settings["scenario_ids"], settings["include_tags"], settings["exclude_tags"]
+    )
+    skipped = [
+        {"id": s["id"], "skip_reason": s.get("skip_reason", "")} for s in skipped_scenarios
+    ]
 
-    scenario_results = [run_scenario(sc, agent_fn, runs) for sc in scenarios]
+    baseline_path = Path(settings["baseline"])
+    baseline_exists = baseline_path.exists()
+    if settings["require_baseline"] and not baseline_exists:
+        # CI safety: a fresh runner must never mint a green baseline by accident.
+        raise ConfigError(f"Baseline required but not found: {baseline_path}")
+
+    if settings["target"]:
+        agent_fn = make_http_agent(settings["target"], settings["http_input_key"])
+        agent_label = settings["target"]
+    else:
+        agent_fn = load_agent(settings["agent"])  # AgentLoadError -> exit 3
+        agent_label = settings["agent"]
+
+    scenario_results = [
+        run_scenario(sc, agent_fn, effective_runs(sc, settings["runs"])) for sc in to_run
+    ]
     overall_pass_rate = sum(sr["pass_rate"] for sr in scenario_results) / len(scenario_results)
 
-    baseline_path = Path(args.baseline)
-    baseline = load_baseline(baseline_path) if baseline_path.exists() else None
-
+    baseline = load_baseline(baseline_path) if baseline_exists else None
     events: list[dict] = []
     baseline_created = baseline_updated = False
     if baseline is None:
@@ -521,46 +927,61 @@ def cmd_run(args: argparse.Namespace) -> int:
         baseline_created = True
         status, exit_code = "baseline_created", EXIT_OK
     else:
-        regressed, events = diff_against_baseline(baseline, scenario_results)
+        regressed, events = diff_against_baseline(baseline, scenario_results, file_ids)
         missing = [e for e in events if e["kind"] == "missing"]
-        if args.update_baseline:
+        if settings["update_baseline"]:
             # The only way to overwrite an existing baseline.
-            write_baseline(baseline_path, scenario_results)
+            write_baseline(baseline_path, scenario_results, existing=baseline, file_ids=file_ids)
             baseline_updated = True
             status, exit_code = "baseline_updated", EXIT_OK
         elif regressed:
             status, exit_code = "regressed", EXIT_REGRESSION
-        elif args.fail_on_missing and missing:
+        elif settings["fail_on_missing"] and missing:
             status, exit_code = "fail_missing", EXIT_REGRESSION
         else:
             status, exit_code = "pass", EXIT_OK
 
-    print_report(scenario_results, events, status, baseline_path, overall_pass_rate, exit_code)
+    print_report(
+        scenario_results, skipped, events, status, baseline_path, overall_pass_rate, exit_code
+    )
 
-    if args.json_out:
-        artifact = {
-            "version": 1,
-            "started_at": started_at,
-            "completed_at": _utcnow(),
-            "duration_ms": round((time.perf_counter() - t0) * 1000, 3),
-            "agent": args.agent,
-            "scenarios_file": args.scenarios,
-            "scenario_count": len(scenario_results),
-            "runs_per_scenario": runs,
-            "scenarios": scenario_results,
-            "baseline": {
-                "path": str(baseline_path),
-                "existed": baseline is not None,
-                "created": baseline_created,
-                "updated": baseline_updated,
-            },
-            "comparison": {"events": events},
-            "status": status,
-            "exit_code": exit_code,
-        }
-        json_out = Path(args.json_out)
+    duration_ms = round((time.perf_counter() - t0) * 1000, 3)
+    run_counts = {sr["runs"] for sr in scenario_results}
+    artifact = {
+        "version": 1,
+        "started_at": started_at,
+        "completed_at": _utcnow(),
+        "duration_ms": duration_ms,
+        "agent": settings["agent"],
+        "target": settings["target"],
+        "scenarios_file": settings["scenarios"],
+        "scenario_count": len(scenario_results),
+        "runs_per_scenario": run_counts.pop() if len(run_counts) == 1 else None,
+        "total_runs": sum(sr["runs"] for sr in scenario_results),
+        "overall_pass_rate": overall_pass_rate,
+        "scenarios": scenario_results,
+        "skipped": skipped,
+        "baseline": {
+            "path": str(baseline_path),
+            "existed": baseline is not None,
+            "created": baseline_created,
+            "updated": baseline_updated,
+        },
+        "comparison": {"events": events},
+        "status": status,
+        "exit_code": exit_code,
+    }
+    if settings["json_out"]:
+        json_out = Path(settings["json_out"])
         json_out.parent.mkdir(parents=True, exist_ok=True)
         json_out.write_text(json.dumps(artifact, indent=2, default=str) + "\n")
+    if settings["junit_out"]:
+        write_junit(
+            Path(settings["junit_out"]), scenario_results, skipped, agent_label,
+            duration_ms / 1000,
+        )
+    if settings["markdown_out"]:
+        write_markdown(Path(settings["markdown_out"]), artifact)
 
     return exit_code
 
@@ -573,10 +994,25 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     run_p = sub.add_parser("run", help="run scenarios against an agent and diff against baseline")
     run_p.add_argument("scenarios", help="path to scenarios YAML file")
-    run_p.add_argument("--agent", required=True, help="agent as module:function, e.g. myagent:agent")
-    run_p.add_argument("--baseline", default=DEFAULT_BASELINE, help="baseline JSON path")
+    run_p.add_argument("--agent", default=None, help="agent as module:function, e.g. myagent:agent")
+    run_p.add_argument("--target", default=None, help="URL of a running HTTP agent to POST to")
+    run_p.add_argument(
+        "--http-input-key", default=None,
+        help="JSON key for the scenario input in --target POST bodies (default: input)",
+    )
+    run_p.add_argument("--baseline", default=None,
+                       help=f"baseline JSON path (default: {DEFAULT_BASELINE})")
     run_p.add_argument("--json-out", default=None, help="write full run artifact JSON to this path")
-    run_p.add_argument("--runs", type=int, default=1, help="runs per scenario (default 1)")
+    run_p.add_argument("--junit-out", default=None, help="write JUnit XML report to this path")
+    run_p.add_argument("--markdown-out", default=None, help="write Markdown report to this path")
+    run_p.add_argument(
+        "--runs", type=int, default=None,
+        help="runs per scenario; overrides scenario-level 'runs' (default 1)",
+    )
+    run_p.add_argument(
+        "--require-baseline", action="store_true",
+        help="exit 2 if the baseline file does not exist (recommended for CI)",
+    )
     run_p.add_argument(
         "--update-baseline", action="store_true",
         help="overwrite the existing baseline with the current results",
@@ -585,6 +1021,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-on-missing", action="store_true",
         help="exit 1 if a baseline scenario is missing from the scenario file",
     )
+    run_p.add_argument(
+        "--scenario", action="append", default=None, metavar="ID",
+        help="run only this scenario id (repeatable)",
+    )
+    run_p.add_argument(
+        "--include-tag", action="append", default=None, metavar="TAG",
+        help="run only scenarios with at least one included tag (repeatable)",
+    )
+    run_p.add_argument(
+        "--exclude-tag", action="append", default=None, metavar="TAG",
+        help="exclude scenarios with any excluded tag (repeatable)",
+    )
+    run_p.add_argument(
+        "--config", default=None,
+        help=f"config YAML path (default: {DEFAULT_CONFIG_FILE} if present); CLI flags win",
+    )
     run_p.set_defaults(func=cmd_run)
     return parser
 
@@ -592,12 +1044,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "runs", 1) < 1:
-        parser.error("--runs must be >= 1")
     try:
         return args.func(args)
     except ScenarioError as exc:
         print(f"ERROR: invalid scenario file: {exc}", file=sys.stderr)
+        return EXIT_INVALID_SCENARIOS
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return EXIT_INVALID_SCENARIOS
     except AgentLoadError as exc:
         print(f"ERROR: could not load agent: {exc}", file=sys.stderr)
