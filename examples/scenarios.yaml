@@ -1,0 +1,9 @@
+- id: refund_happy_path
+  input: "I want a refund for order 123"
+  assert:
+    - type: contains
+      value: refund
+    - type: used_tool
+      value: lookup_order
+    - type: max_steps
+      value: 5

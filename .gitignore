@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+.agenteval/
+.pytest_cache/
+uv.lock
