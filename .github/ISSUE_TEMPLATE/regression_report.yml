@@ -1,0 +1,53 @@
+name: Regression report
+description: A scenario that passed against baseline is now failing.
+title: "[regression]: "
+labels: ["regression"]
+body:
+  - type: input
+    id: scenario-id
+    attributes:
+      label: Scenario id
+    validations:
+      required: true
+  - type: input
+    id: baseline-rate
+    attributes:
+      label: Baseline pass rate
+      placeholder: "100%"
+    validations:
+      required: true
+  - type: input
+    id: current-rate
+    attributes:
+      label: Current pass rate
+      placeholder: "0%"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: artifact-json
+    attributes:
+      label: Run artifact JSON
+      description: Contents (or relevant excerpt) of the `--json-out` artifact.
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: reports
+    attributes:
+      label: JUnit / Markdown report
+      description: Relevant excerpt from the `--junit-out` / `--markdown-out` report.
+    validations:
+      required: false
+  - type: input
+    id: ci-link
+    attributes:
+      label: CI link (if available)
+    validations:
+      required: false

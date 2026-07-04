@@ -68,6 +68,19 @@ confirm, and depends on the `pypi` environment plus a configured Trusted
 Publisher. Until you complete the setup above, running it fails at the publish
 step by design. It never runs on push or on a tag.
 
+## Checksums
+
+Every build (CI, release, and `scripts/release-check.sh`) generates
+`dist/SHA256SUMS` via `scripts/build_checksums.py`, and it is attached to each
+GitHub Release alongside the wheel and sdist. Verify a downloaded artifact with:
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+PyPI computes and displays its own hashes independently; the `SHA256SUMS` file is
+for the GitHub Release artifacts.
+
 ## Recommended release flow
 
 1. Bump `__version__` in `agenteval.py`.

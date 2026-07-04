@@ -1,0 +1,63 @@
+name: Bug report
+description: Something in AgentEval behaves incorrectly.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: AgentEval version
+      description: Output of `agenteval --version` (or the commit SHA).
+      placeholder: "agenteval 0.4.0"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command run
+      description: The exact command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Scenario snippet
+      description: The relevant portion of your scenarios YAML (redact secrets).
+      render: yaml
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: exit-code
+    attributes:
+      label: Exit code
+      placeholder: "1"
+    validations:
+      required: false
+  - type: textarea
+    id: artifact
+    attributes:
+      label: Artifact / log excerpt
+      description: Relevant lines from console output or a JSON/JUnit/Markdown artifact.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: OS / Python version
+      placeholder: "Ubuntu 24.04, Python 3.12"
+    validations:
+      required: true

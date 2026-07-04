@@ -154,6 +154,15 @@ PyPI publishing via Trusted Publishing.
 - [CI guide](docs/ci.md) — using AgentEval in your pipeline, plus this repo's own CI/CD.
 - [Release strategy](docs/release-strategy.md) — free-tier CI/CD and tag-driven releases.
 - [Publishing](docs/publishing.md) — optional, token-free PyPI via Trusted Publishing.
+- [Repo governance](docs/repo-governance.md) — branch protection, Dependabot, cost controls.
+- Runbooks: [release](docs/runbooks/release.md) · [CI failure](docs/runbooks/ci-failure.md) · [rollback](docs/runbooks/rollback.md).
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has local setup and development principles;
+[SUPPORT.md](SUPPORT.md) covers where to get help; [SECURITY.md](SECURITY.md)
+covers reporting vulnerabilities. Bug/feature/regression issue templates and a PR
+template live under `.github/`.
 
 ## Design boundary
 

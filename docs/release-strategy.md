@@ -10,12 +10,15 @@ On every push and pull request, [`ci.yml`](../.github/workflows/ci.yml):
 1. Runs the test suite (`uv run pytest`).
 2. Runs the linter (`uvx ruff check .`).
 3. Builds the wheel and sdist (`uv build`).
-4. Smoke-tests **direct script** usage (`uv run agenteval.py --version` and
+4. Sanity-checks the built artifacts (`scripts/verify_dist.py`): the wheel and
+   sdist contain the expected files and no repo junk (`.github/`, caches, etc.).
+5. Generates `dist/SHA256SUMS` (`scripts/build_checksums.py`).
+6. Smoke-tests **direct script** usage (`uv run agenteval.py --version` and
    `selftest`).
-5. Smoke-tests the **installed console script** by installing the built wheel
+7. Smoke-tests the **installed console script** by installing the built wheel
    into a throwaway venv and running `agenteval --version` and `agenteval selftest`.
-6. Uploads `dist/*.whl` and `dist/*.tar.gz` as build artifacts with **7-day**
-   retention.
+8. Uploads `dist/*.whl`, `dist/*.tar.gz`, and `dist/SHA256SUMS` as build
+   artifacts with **7-day** retention.
 
 ## Free usage boundary
 
@@ -36,7 +39,8 @@ On every push and pull request, [`ci.yml`](../.github/workflows/ci.yml):
 - Normal development happens on branches and PRs; **CI must pass before merge**.
 - Releases are **tag-driven**: pushing a `vX.Y.Z` tag triggers
   [`release.yml`](../.github/workflows/release.yml), which builds artifacts from
-  the tagged commit and attaches the wheel + sdist to a **GitHub Release**.
+  the tagged commit, verifies them, and attaches the wheel + sdist + `SHA256SUMS`
+  to a **GitHub Release**. Consumers verify a download with `sha256sum -c SHA256SUMS`.
 - **PyPI publishing is optional and never automatic.** It lives in a separate,
   manual [`publish.yml`](../.github/workflows/publish.yml) that uses **Trusted
   Publishing / OIDC** only — no API tokens are stored as secrets. See
@@ -59,8 +63,17 @@ Run the same gates locally before tagging:
 scripts/release-check.sh
 ```
 
-It runs pytest, ruff, `uv build`, the script selftest, and an installed-wheel
-smoke test in a temp venv. Fail-fast; if it's green, you're safe to tag.
+It runs pytest, ruff, `uv build`, dist verification, checksum generation, the
+script selftest, and an installed-wheel smoke test in a temp venv. Fail-fast; if
+it's green, you're safe to tag.
+
+## Runbooks
+
+Step-by-step procedures live in [runbooks/](runbooks/):
+
+- [release.md](runbooks/release.md) — cutting a release, start to finish.
+- [ci-failure.md](runbooks/ci-failure.md) — triaging a red CI run.
+- [rollback.md](runbooks/rollback.md) — handling a bad GitHub/PyPI release.
 
 ## No-cost fallback tools
 

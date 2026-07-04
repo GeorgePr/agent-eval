@@ -13,6 +13,12 @@ echo "==> build"
 rm -rf dist
 uv build
 
+echo "==> verify distributions"
+uv run python scripts/verify_dist.py --dist-dir dist
+
+echo "==> checksums"
+uv run python scripts/build_checksums.py --dist-dir dist
+
 echo "==> script selftest"
 uv run agenteval.py --version
 uv run agenteval.py selftest

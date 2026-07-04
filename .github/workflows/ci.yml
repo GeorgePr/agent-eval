@@ -23,6 +23,8 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Fail fast if a step hangs; a normal run finishes in ~1-2 minutes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +45,14 @@ jobs:
       # Build wheel + sdist and prove the source entrypoint works.
       - name: Build distributions
         run: uv build
+
+      # Sanity-check the artifacts contain expected files and no repo junk.
+      - name: Verify distributions
+        run: uv run python scripts/verify_dist.py --dist-dir dist
+
+      # Generate SHA256SUMS so the uploaded artifact bundle is verifiable.
+      - name: Generate checksums
+        run: uv run python scripts/build_checksums.py --dist-dir dist
 
       - name: Smoke-test script usage
         run: |
@@ -66,4 +76,5 @@ jobs:
           path: |
             dist/*.whl
             dist/*.tar.gz
+            dist/SHA256SUMS
           retention-days: 7

@@ -1,0 +1,23 @@
+# Dependabot: modest, weekly dependency PRs. Reviewed like any change — they must
+# pass CI before merge and are not auto-merged. See docs/repo-governance.md.
+version: 2
+updates:
+  # Keep GitHub Actions (checkout, setup-python, setup-uv, upload-artifact, ...) current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  # Keep the Python dependency surface (pyproject.toml) current — pyyaml + dev deps.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"

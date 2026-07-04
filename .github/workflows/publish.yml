@@ -22,6 +22,7 @@ jobs:
     # Only proceed on explicit confirmation.
     if: ${{ github.event.inputs.confirm == 'publish' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Environment protection: configure required reviewers on `pypi` in repo
     # settings so a human must approve each publish.
     environment: pypi

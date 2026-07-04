@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / usage help
+    url: https://github.com/GeorgePr/agent-eval/blob/main/SUPPORT.md
+    about: How to get help and what to include. Please read before opening an issue.
+  - name: Documentation
+    url: https://github.com/GeorgePr/agent-eval/tree/main/docs
+    about: Scenario format, artifacts, CI, release strategy, and publishing docs.

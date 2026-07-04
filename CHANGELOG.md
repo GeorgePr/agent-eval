@@ -28,6 +28,26 @@ except the version bump when this is cut.
   cap, Linux-only rationale, and no-cost fallbacks (self-hosted runner, Jenkins,
   Forgejo/Gitea + Woodpecker).
 
+### DevOps governance & release hardening
+
+- **Repo governance** (`docs/repo-governance.md`): branch strategy, branch
+  protection settings, the exact required status check (`test`), cost controls,
+  and a manual GitHub-settings checklist. Linked from the README.
+- **Community files**: PR template and bug/feature/regression issue templates
+  (`.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/*`), plus
+  `SECURITY.md`, `CONTRIBUTING.md`, and `SUPPORT.md`.
+- **Dependabot** (`.github/dependabot.yml`): weekly `github-actions` and `pip`
+  updates, capped open-PR counts, labels; reviewed via CI, not auto-merged.
+- **Workflow hardening**: `timeout-minutes` on every job; confirmed minimal
+  permissions (CI `contents: read`, release `contents: write`, publish
+  `id-token: write` + `pypi` environment); no tokens, no schedules, Linux-only.
+- **Release checksums** (`scripts/build_checksums.py`): `dist/SHA256SUMS`
+  generated in CI, release, and `release-check.sh`, and attached to each Release.
+- **Distribution sanity checks** (`scripts/verify_dist.py`): wheel/sdist must
+  contain expected files and no repo junk; curated `[tool.hatch.build.targets.sdist]`
+  include list keeps the sdist clean. Run in CI, release, and `release-check.sh`.
+- **Runbooks** (`docs/runbooks/`): `ci-failure.md`, `release.md`, `rollback.md`.
+
 ## v0.4.0
 
 Release/adoption hardening — easier to install, sanity-check, demo, and maintain.

@@ -4,10 +4,19 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## Current status
 
+- **DevOps governance & release hardening — implemented (Unreleased, part of
+  v0.5.0).** Repo governance docs, PR/issue templates, SECURITY/CONTRIBUTING/
+  SUPPORT, Dependabot, workflow timeouts, release-artifact checksums (SHA256SUMS),
+  distribution sanity checks (`verify_dist`), and CI/release/rollback runbooks.
+  No product-behavior change; `agenteval.py` untouched. Only packaging config
+  added to `pyproject.toml` (curated sdist include list).
 - **v0.5.0 CI/CD & release hardening — implemented (Unreleased).** GitHub Actions
   CI + tag-driven release workflow + optional manual OIDC publish workflow +
   release/publishing docs + local release-check helper. Product code
   (`agenteval.py`) unchanged; `__version__` still `0.4.0` until v0.5.0 is cut.
+- Tests: **193 passing** (adds `test_devops.py` 34 to the prior 159).
+  `uvx ruff check .` clean; `uv build`, `verify_dist`, `build_checksums`,
+  `release-check.sh` all green.
 - Version: **0.4.0** (`__version__` in `agenteval.py`).
 - Single-file implementation: `agenteval.py`.
 - Runtime deps: **stdlib + pyyaml only**. Dev dep: **pytest only**. No mypy.
@@ -21,17 +30,20 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## CI/CD workflow summary
 
-- `.github/workflows/ci.yml` — push/PR: pytest, ruff, `uv build`, script smoke
-  (`--version`, `selftest`), installed-wheel smoke (wheel → temp venv →
-  `agenteval --version`/`selftest`), upload dist (7-day retention). Linux-only,
-  Python 3.12, concurrency-cancel, no secrets.
+- `.github/workflows/ci.yml` — push/PR: pytest, ruff, `uv build`, `verify_dist`,
+  `build_checksums`, script smoke (`--version`, `selftest`), installed-wheel smoke
+  (wheel → temp venv → `agenteval --version`/`selftest`), upload
+  wheel+sdist+SHA256SUMS (7-day). Linux-only, Python 3.12, concurrency-cancel,
+  `contents: read`, `timeout-minutes: 15`, no secrets.
 - `.github/workflows/release.yml` — `v*` tag: `scripts/check_version.py` guards
-  tag==`__version__`, then pytest/ruff/selftest/build, upload dist (30-day),
-  `gh release create/upload` attaches wheel+sdist. `permissions: contents: write`.
-  No PyPI publish.
+  tag==`__version__`, then pytest/ruff/selftest/build/verify/checksums, upload
+  (30-day), `gh release create/upload` attaches wheel+sdist+SHA256SUMS.
+  `contents: write`, `timeout-minutes: 15`. No PyPI publish.
 - `.github/workflows/publish.yml` — `workflow_dispatch` only, `environment: pypi`,
-  `id-token: write`, `pypa/gh-action-pypi-publish` (OIDC, no token). Inert until a
-  PyPI Trusted Publisher + `pypi` environment are configured.
+  `id-token: write`, `timeout-minutes: 15`, `pypa/gh-action-pypi-publish` (OIDC, no
+  token). Inert until a PyPI Trusted Publisher + `pypi` environment are configured.
+- `.github/dependabot.yml` — weekly `github-actions` + `pip` updates, capped PRs.
+- Required status check for branch protection: **`test`** (job id in `ci.yml`).
 
 ## Release strategy
 
@@ -128,23 +140,29 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 ## File map
 
 - `agenteval.py` — the tool (single file).
-- `tests/test_agenteval.py` (v0.1), `test_v02.py`, `test_v03.py`, `test_v04.py`,
-  `test_release.py` (CI/CD guardrails + tag/version helper).
-- `scripts/check_version.py` (tag==version), `scripts/release-check.sh` (local gates).
-- `.github/workflows/ci.yml`, `release.yml`, `publish.yml`.
+- `tests/` — `test_agenteval.py` (v0.1), `test_v02.py`, `test_v03.py`,
+  `test_v04.py`, `test_release.py` (CI/CD guardrails + tag/version helper),
+  `test_devops.py` (Dependabot, workflow hardening, checksums, verify_dist,
+  community files).
+- `scripts/` — `check_version.py` (tag==version), `release-check.sh` (local
+  gates), `build_checksums.py` (SHA256SUMS), `verify_dist.py` (dist sanity).
+- `.github/` — `workflows/{ci,release,publish}.yml`, `dependabot.yml`,
+  `pull_request_template.md`, `ISSUE_TEMPLATE/{bug_report,feature_request,
+  regression_report,config}.yml`.
 - `examples/myagent.py`, `examples/scenarios.yaml`.
-- `docs/scenario-format.md`, `docs/artifacts.md`, `docs/ci.md`,
-  `docs/release-strategy.md`, `docs/publishing.md`.
-- `README.md`, `CHANGELOG.md`, `claude.md`, `pyproject.toml`, `.gitignore`.
+- `docs/` — `scenario-format.md`, `artifacts.md`, `ci.md`, `release-strategy.md`,
+  `publishing.md`, `repo-governance.md`, `runbooks/{ci-failure,release,rollback}.md`.
+- Root — `README.md`, `CHANGELOG.md`, `claude.md`, `SECURITY.md`,
+  `CONTRIBUTING.md`, `SUPPORT.md`, `pyproject.toml`, `.gitignore`.
 
-## Commands run this session (v0.5 CI/CD)
+## Commands run this session (DevOps governance)
 
-- `uv run pytest` → 159 passed
+- `uv run pytest` → 193 passed
 - `uvx ruff check .` → clean
 - `uv build` → `agenteval-0.4.0` wheel + sdist
-- `sh scripts/release-check.sh` → OK (incl. installed-wheel smoke test)
-- `uv run python scripts/check_version.py v0.4.0` → OK; `v9.0.0` → mismatch exit 1
-- Validated all workflow YAML parses via `yaml.safe_load`.
+- `python scripts/build_checksums.py --dist-dir dist` → SHA256SUMS written
+- `python scripts/verify_dist.py --dist-dir dist` → OK (after curating sdist include)
+- `sh scripts/release-check.sh` → OK end to end (incl. verify + checksums + wheel smoke)
 
 ## Known limitations
 
@@ -159,9 +177,20 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 - `publish.yml` is inert until a PyPI Trusted Publisher + `pypi` environment
   are configured; PyPI publishing is otherwise manual.
 
+## Manual GitHub settings still required (not enforceable by repo files)
+
+- Branch protection on `main`; mark **`test`** as a required status check.
+- Enable Private vulnerability reporting (for SECURITY.md flow).
+- Create the `pypi` environment with required reviewers (only if publishing).
+- Private repos: set a **$0 billing spending limit**.
+- Optional: `.github/CODEOWNERS`, required signed commits.
+- See `docs/repo-governance.md` for the full checklist.
+
 ## Next recommended step
 
-Push and confirm the CI workflow runs green on GitHub, then cut **v0.5.0**
-(bump `__version__`, finalize CHANGELOG, tag `v0.5.0`) to exercise the release
-workflow once. After that, dogfood AgentEval against a real agent project and
-capture the first real regression case study.
+1. Push; confirm CI (`test`) runs green on GitHub and Dependabot opens expected PRs.
+2. Enable branch protection in the GitHub UI (required check: `test`).
+3. Cut a real **v0.5.0** (bump `__version__`, finalize CHANGELOG, tag `v0.5.0`) to
+   exercise the release workflow end to end.
+4. **Do not add product features** until that first real release has been exercised;
+   after that, dogfood against a real agent and capture the first regression case study.

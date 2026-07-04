@@ -31,6 +31,21 @@ path = "agenteval.py"
 [tool.hatch.build.targets.wheel]
 include = ["agenteval.py"]
 
+# Curate the sdist explicitly so it ships source + docs + tests but never repo
+# scaffolding (.github/, caches, local state). Keeps `verify_dist.py` green.
+[tool.hatch.build.targets.sdist]
+include = [
+    "agenteval.py",
+    "README.md",
+    "CHANGELOG.md",
+    "claude.md",
+    "pyproject.toml",
+    "docs/",
+    "scripts/",
+    "tests/",
+    "examples/",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
