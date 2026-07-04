@@ -132,3 +132,66 @@ agenteval run scenarios.yaml \
 
 HTTP options can also live in `.agenteval.yaml` (`http_timeout`, `http_headers`,
 `http_bearer_token_env`, `http_method`); CLI flags override config values.
+
+---
+
+# AgentEval's own CI/CD (this repo)
+
+Everything above is about running AgentEval inside *your* pipeline. This section
+documents how *this repository* is tested and released. See also
+[release-strategy.md](release-strategy.md) and [publishing.md](publishing.md).
+
+## What `ci.yml` does
+
+Runs on every push and pull request (`.github/workflows/ci.yml`): tests
+(`uv run pytest`), lint (`uvx ruff check .`), `uv build`, a direct-script smoke
+test (`--version`, `selftest`), and an installed-wheel smoke test (install the
+built wheel into a temp venv and run `agenteval --version` / `agenteval selftest`).
+It uploads `dist/*.whl` and `dist/*.tar.gz` with 7-day retention.
+
+## What `release.yml` does
+
+Triggered by pushing a `v*` tag. It verifies the tag matches
+`agenteval.__version__` (via `scripts/check_version.py`), re-runs tests + lint +
+selftest + build on the tagged commit, uploads artifacts (30-day retention), and
+creates/updates a GitHub Release with the wheel + sdist attached. It does **not**
+publish to PyPI.
+
+## Reading failures
+
+- **Tests/lint red:** open the failed step's log; `pytest`/`ruff` print the exact
+  file and line. Reproduce locally with `uv run pytest` / `uvx ruff check .`.
+- **Installed-wheel step red but script step green:** a packaging problem (entry
+  point / included files), not a logic bug. Reproduce with `scripts/release-check.sh`.
+- **`release.yml` fails at "Verify tag matches version":** the tag and
+  `__version__` disagree — fix `__version__` or delete/retag.
+
+## Where artifacts go
+
+Under the workflow run's **Artifacts** section (Actions tab → the run). CI
+artifacts expire after 7 days, release artifacts after 30; the permanent copies
+live on the **GitHub Release** page for each tag. Retention is short on purpose —
+it keeps storage usage (and any private-repo billing) low.
+
+## Why Linux-only initially
+
+AgentEval is pure Python (stdlib + pyyaml). A macOS/Windows matrix would multiply
+runner minutes for little added confidence. Start Linux-only; add other OSes only
+if you actually support and test against them.
+
+## Keeping GitHub Actions free
+
+- **Public repo:** standard Linux runners are free — nothing to do.
+- **Private repo:** included minutes/storage are finite. Set a **$0 spending
+  limit** in *Settings → Billing* so you can't be charged, keep workflows small,
+  keep artifact retention short, and avoid unnecessary `schedule:` triggers.
+- Avoid macOS/Windows and large matrices unless you need them.
+
+## If GitHub Actions isn't free enough
+
+The pipeline is just `uv` + `ruff` + `pytest` commands, so it runs anywhere:
+
+- Run `scripts/release-check.sh` locally and release by hand — no CI service needed.
+- Add a **GitHub Actions self-hosted runner** on a homelab box or Raspberry Pi.
+- Use **Jenkins** on a homelab with a job running the same commands.
+- Use **Forgejo/Gitea + Woodpecker CI**, fully self-hosted and open-source.

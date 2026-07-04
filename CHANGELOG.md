@@ -5,6 +5,29 @@ version. The product boundary is unchanged throughout: deterministic agent
 regression testing — `run -> score -> diff -> artifact -> exit code`, zero LLM by
 default, stdlib + pyyaml only.
 
+## Unreleased (v0.5.0)
+
+CI/CD and release hardening. No product-behavior change; `agenteval.py` untouched
+except the version bump when this is cut.
+
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): tests, ruff, `uv build`,
+  and both script + installed-wheel smoke tests on every push/PR. Linux-only,
+  single Python (3.12), concurrency-cancel, 7-day artifact retention, no secrets.
+- **Tag-driven release workflow** (`.github/workflows/release.yml`): on a `v*`
+  tag, verifies the tag matches `agenteval.__version__`, re-runs checks, builds,
+  and attaches wheel + sdist to a GitHub Release. No PyPI publishing.
+- **Optional manual publish workflow** (`.github/workflows/publish.yml`):
+  `workflow_dispatch` only, PyPI **Trusted Publishing (OIDC)**, `pypi`
+  environment gate, no API tokens. Inert until a Trusted Publisher is configured.
+- **Release docs**: `docs/release-strategy.md` (free-tier CI/CD + fallbacks),
+  `docs/publishing.md` (token-free publishing), and an AgentEval-CI/CD section in
+  `docs/ci.md`.
+- **Local release helper**: `scripts/release-check.sh` runs the CI gates locally;
+  `scripts/check_version.py` enforces tag/version match (unit-tested).
+- **Free-tier/cost guidance**: public-repo free path, private-repo $0 spending
+  cap, Linux-only rationale, and no-cost fallbacks (self-hosted runner, Jenkins,
+  Forgejo/Gitea + Woodpecker).
+
 ## v0.4.0
 
 Release/adoption hardening — easier to install, sanity-check, demo, and maintain.

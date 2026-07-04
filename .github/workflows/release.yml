@@ -1,0 +1,66 @@
+# Release: build artifacts from a vX.Y.Z tag and attach them to a GitHub Release.
+# Tag-driven only. No PyPI publishing here (see docs/publishing.md + publish.yml).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# contents: write is required to create/update the GitHub Release.
+# No id-token here — this workflow does not publish to PyPI.
+permissions:
+  contents: write
+
+env:
+  UV_PYTHON: "3.12"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      # Guard: the tag must match agenteval.__version__, or we stop before build.
+      - name: Verify tag matches version
+        run: uv run python scripts/check_version.py "${GITHUB_REF_NAME}"
+
+      # Re-run the core checks on the tagged commit before releasing.
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uvx ruff check .
+
+      - name: Selftest
+        run: uv run agenteval.py selftest
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          retention-days: 30
+
+      # Create the Release (or upload to it if it already exists on re-run).
+      # gh is preinstalled on ubuntu-latest; GITHUB_TOKEN is the automatic,
+      # least-privilege token — not a user-supplied or PyPI secret.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz \
+            --title "AgentEval ${GITHUB_REF_NAME}" \
+            --generate-notes \
+          || gh release upload "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz --clobber

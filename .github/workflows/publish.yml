@@ -1,0 +1,48 @@
+# Publish to PyPI — MANUAL ONLY, and INACTIVE until you configure a PyPI
+# Trusted Publisher for this repo/workflow and create the `pypi` environment.
+#
+# This workflow uses PyPI Trusted Publishing (OIDC). It stores NO API tokens and
+# has no password. Until Trusted Publishing is set up on PyPI, running it will
+# fail at the publish step by design. See docs/publishing.md.
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "publish" to confirm you intend to upload to PyPI'
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Only proceed on explicit confirmation.
+    if: ${{ github.event.inputs.confirm == 'publish' }}
+    runs-on: ubuntu-latest
+    # Environment protection: configure required reviewers on `pypi` in repo
+    # settings so a human must approve each publish.
+    environment: pypi
+    permissions:
+      # OIDC token for Trusted Publishing. This is the ONLY credential used.
+      id-token: write
+      contents: read
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build distributions
+        run: uv build
+
+      # Trusted Publishing (OIDC) — no username/password/token inputs.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

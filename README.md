@@ -117,13 +117,25 @@ uv run agenteval.py baseline promote --from .agenteval/latest.json \
 `baseline show` prints the current reference. Commit the promoted baseline in the
 same PR as the change that caused it.
 
-## Packaging
+## Packaging & releases
 
 `pyproject.toml` uses a hatchling build backend and exposes an `agenteval`
 console script (`agenteval = "agenteval:main"`), with the version sourced from
 `__version__` in `agenteval.py`. Build with `uv build`; check with
 `uv run agenteval.py --version`. Direct script execution
 (`uv run agenteval.py ...`) is always supported.
+
+CI runs on every push/PR (tests, ruff, build, script + installed-wheel smoke
+tests); releases are tag-driven (`vX.Y.Z`) and attach the wheel + sdist to a
+GitHub Release. Before tagging, run the same gates locally:
+
+```sh
+scripts/release-check.sh
+```
+
+See [docs/release-strategy.md](docs/release-strategy.md) for the free-tier CI/CD
+strategy and [docs/publishing.md](docs/publishing.md) for optional, token-free
+PyPI publishing via Trusted Publishing.
 
 ## Exit codes
 
@@ -139,7 +151,9 @@ console script (`agenteval = "agenteval:main"`), with the version sourced from
 
 - [Scenario format](docs/scenario-format.md) — YAML schema and every assertion type.
 - [Artifacts](docs/artifacts.md) — JSON run artifact, baseline, JUnit, Markdown.
-- [CI guide](docs/ci.md) — Jenkins / GitHub Actions / Azure DevOps, HTTP targets.
+- [CI guide](docs/ci.md) — using AgentEval in your pipeline, plus this repo's own CI/CD.
+- [Release strategy](docs/release-strategy.md) — free-tier CI/CD and tag-driven releases.
+- [Publishing](docs/publishing.md) — optional, token-free PyPI via Trusted Publishing.
 
 ## Design boundary
 

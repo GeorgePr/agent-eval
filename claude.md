@@ -4,17 +4,50 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## Current status
 
-- Version: **0.4.0** (`__version__` in `agenteval.py`) — release/adoption
-  hardening on top of v0.3. Complete and verified.
+- **v0.5.0 CI/CD & release hardening — implemented (Unreleased).** GitHub Actions
+  CI + tag-driven release workflow + optional manual OIDC publish workflow +
+  release/publishing docs + local release-check helper. Product code
+  (`agenteval.py`) unchanged; `__version__` still `0.4.0` until v0.5.0 is cut.
+- Version: **0.4.0** (`__version__` in `agenteval.py`).
 - Single-file implementation: `agenteval.py`.
 - Runtime deps: **stdlib + pyyaml only**. Dev dep: **pytest only**. No mypy.
 - Packaging: hatchling backend + `agenteval` console script; `uv build` works.
   `uv run agenteval.py ...` still works unchanged.
 - Product boundary unchanged: deterministic agent regression testing —
   `run -> score -> diff -> artifact -> exit code`. Zero LLM by default.
-- Tests: **139 passing** (test_agenteval 26, test_v02 30, test_v03 48,
-  test_v04 35). `uvx ruff check .` clean.
-- v0.3 released at commit `7cc06e6`.
+- Tests: **159 passing** (test_agenteval 26, test_v02 30, test_v03 48,
+  test_v04 35, test_release 20). `uvx ruff check .` clean.
+- v0.4 released at commit `4a8e808`.
+
+## CI/CD workflow summary
+
+- `.github/workflows/ci.yml` — push/PR: pytest, ruff, `uv build`, script smoke
+  (`--version`, `selftest`), installed-wheel smoke (wheel → temp venv →
+  `agenteval --version`/`selftest`), upload dist (7-day retention). Linux-only,
+  Python 3.12, concurrency-cancel, no secrets.
+- `.github/workflows/release.yml` — `v*` tag: `scripts/check_version.py` guards
+  tag==`__version__`, then pytest/ruff/selftest/build, upload dist (30-day),
+  `gh release create/upload` attaches wheel+sdist. `permissions: contents: write`.
+  No PyPI publish.
+- `.github/workflows/publish.yml` — `workflow_dispatch` only, `environment: pypi`,
+  `id-token: write`, `pypa/gh-action-pypi-publish` (OIDC, no token). Inert until a
+  PyPI Trusted Publisher + `pypi` environment are configured.
+
+## Release strategy
+
+- Branch/PR dev; CI green before merge. Releases are **tag-driven** (`vX.Y.Z`).
+- Version single-sourced from `agenteval.__version__`; tag must match (enforced).
+- GitHub Release with wheel+sdist is the deliverable. PyPI is **optional, manual,
+  OIDC-only** — no API tokens anywhere. See `docs/publishing.md`.
+- Pre-tag flow: bump `__version__` → update `CHANGELOG.md` →
+  `scripts/release-check.sh` → tag → push tag.
+
+## Cost assumptions
+
+- Public repo on standard GitHub-hosted Linux runners = free (assumed acceptable).
+- Private repo: set a **$0 spending cap**; workflows kept small, Linux-only, short
+  retention. No-cost fallbacks documented: self-hosted runner, Jenkins,
+  Forgejo/Gitea + Woodpecker, or local `scripts/release-check.sh` only.
 
 ## v0.4 summary
 
@@ -95,18 +128,23 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 ## File map
 
 - `agenteval.py` — the tool (single file).
-- `tests/test_agenteval.py` (v0.1), `test_v02.py`, `test_v03.py`, `test_v04.py`.
+- `tests/test_agenteval.py` (v0.1), `test_v02.py`, `test_v03.py`, `test_v04.py`,
+  `test_release.py` (CI/CD guardrails + tag/version helper).
+- `scripts/check_version.py` (tag==version), `scripts/release-check.sh` (local gates).
+- `.github/workflows/ci.yml`, `release.yml`, `publish.yml`.
 - `examples/myagent.py`, `examples/scenarios.yaml`.
-- `docs/scenario-format.md`, `docs/artifacts.md`, `docs/ci.md`.
+- `docs/scenario-format.md`, `docs/artifacts.md`, `docs/ci.md`,
+  `docs/release-strategy.md`, `docs/publishing.md`.
 - `README.md`, `CHANGELOG.md`, `claude.md`, `pyproject.toml`, `.gitignore`.
 
-## Commands run this session (v0.4)
+## Commands run this session (v0.5 CI/CD)
 
-- `uv run pytest` → 139 passed
+- `uv run pytest` → 159 passed
 - `uvx ruff check .` → clean
-- `uv build` → builds `agenteval-0.4.0` wheel + sdist
-- `uv run agenteval.py --version` / `agenteval --version` → `agenteval 0.4.0`
-- Manual smoke of `init`, `validate`, `doctor`, `selftest`, `baseline *`
+- `uv build` → `agenteval-0.4.0` wheel + sdist
+- `sh scripts/release-check.sh` → OK (incl. installed-wheel smoke test)
+- `uv run python scripts/check_version.py v0.4.0` → OK; `v9.0.0` → mismatch exit 1
+- Validated all workflow YAML parses via `yaml.safe_load`.
 
 ## Known limitations
 
@@ -115,9 +153,15 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 - No custom HTTP request-body templates (body is `{input_key: input}`).
 - No distributed execution, dashboard, or persistent database.
 - No mypy configuration.
+- **CI/CD not yet verified on GitHub** — workflows are YAML-valid and the
+  commands they run are proven locally, but actual runner execution (Actions
+  triggers, `gh release create`, OIDC publish) must be confirmed after push.
+- `publish.yml` is inert until a PyPI Trusted Publisher + `pypi` environment
+  are configured; PyPI publishing is otherwise manual.
 
 ## Next recommended step
 
-Not more feature growth. Dogfood AgentEval against a real agent project and
-capture the first real regression case study — that will validate the assertion
-set and baseline workflow against real drift before expanding scope.
+Push and confirm the CI workflow runs green on GitHub, then cut **v0.5.0**
+(bump `__version__`, finalize CHANGELOG, tag `v0.5.0`) to exercise the release
+workflow once. After that, dogfood AgentEval against a real agent project and
+capture the first real regression case study.

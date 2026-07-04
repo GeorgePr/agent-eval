@@ -1,0 +1,69 @@
+# CI: tests, lint, build, and installed-artifact smoke test.
+# Cost-conscious by design: Linux-only, single Python, short artifact retention,
+# no secrets, and superseded branch runs are cancelled.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel an in-progress run when a new commit is pushed to the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pin the interpreter uv uses so the whole job runs on one Python version.
+  UV_PYTHON: "3.12"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Install uv (the project's task runner / builder).
+      - uses: astral-sh/setup-uv@v5
+
+      # Fast deterministic checks first.
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uvx ruff check .
+
+      # Build wheel + sdist and prove the source entrypoint works.
+      - name: Build distributions
+        run: uv build
+
+      - name: Smoke-test script usage
+        run: |
+          uv run agenteval.py --version
+          uv run agenteval.py selftest
+
+      # Prove the *installed* console script works from the built wheel,
+      # in an isolated venv (mirrors what an end user gets from `pip install`).
+      - name: Smoke-test installed wheel
+        run: |
+          uv venv .relenv
+          uv pip install --python .relenv/bin/python dist/*.whl
+          .relenv/bin/agenteval --version
+          .relenv/bin/agenteval selftest
+
+      # Keep artifacts around briefly for debugging a failed/interesting run.
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          retention-days: 7
