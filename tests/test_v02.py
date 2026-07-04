@@ -398,7 +398,8 @@ def _ran_ids(workspace) -> list[str]:
 def test_include_tag_runs_only_matching(workspace):
     path = write_scenarios(workspace, TAGGED_SCENARIOS)
     agent = write_agent(workspace, GOOD_AGENT)
-    rc = run_cli(path, agent, "--include-tag", "smoke", "--json-out", "latest.json")
+    rc = run_cli(path, agent, "--include-tag", "smoke", "--json-out", "latest.json",
+                 "--allow-partial-baseline")
     assert rc == 0
     assert _ran_ids(workspace) == ["refund", "greeting"]
 
@@ -406,7 +407,8 @@ def test_include_tag_runs_only_matching(workspace):
 def test_exclude_tag_excludes_matching(workspace):
     path = write_scenarios(workspace, TAGGED_SCENARIOS)
     agent = write_agent(workspace, GOOD_AGENT)
-    rc = run_cli(path, agent, "--exclude-tag", "expensive", "--json-out", "latest.json")
+    rc = run_cli(path, agent, "--exclude-tag", "expensive", "--json-out", "latest.json",
+                 "--allow-partial-baseline")
     assert rc == 0
     assert _ran_ids(workspace) == ["refund", "greeting"]
 
@@ -414,7 +416,8 @@ def test_exclude_tag_excludes_matching(workspace):
 def test_scenario_flag_runs_only_selected_id(workspace):
     path = write_scenarios(workspace, TAGGED_SCENARIOS)
     agent = write_agent(workspace, GOOD_AGENT)
-    rc = run_cli(path, agent, "--scenario", "refund", "--json-out", "latest.json")
+    rc = run_cli(path, agent, "--scenario", "refund", "--json-out", "latest.json",
+                 "--allow-partial-baseline")
     assert rc == 0
     assert _ran_ids(workspace) == ["refund"]
 
@@ -443,7 +446,8 @@ def test_filtered_out_baseline_scenarios_are_not_missing(workspace, capsys):
     """A filter deselecting a scenario must not look like a deleted scenario."""
     path = write_scenarios(workspace, TAGGED_SCENARIOS)
     agent = write_agent(workspace, GOOD_AGENT)
-    assert run_cli(path, agent, "--include-tag", "smoke") == 0  # baseline: refund+greeting
+    # v0.3: filtered baseline creation needs an explicit opt-in.
+    assert run_cli(path, agent, "--include-tag", "smoke", "--allow-partial-baseline") == 0
     capsys.readouterr()
     rc = run_cli(path, agent, "--scenario", "refund")
     assert rc == 0
@@ -569,5 +573,5 @@ def test_config_include_tags_apply(workspace):
     (workspace / ".agenteval.yaml").write_text("include_tags:\n  - smoke\njson_out: latest.json\n")
     path = write_scenarios(workspace, TAGGED_SCENARIOS)
     agent = write_agent(workspace, GOOD_AGENT)
-    assert run_cli(path, agent) == 0
+    assert run_cli(path, agent, "--allow-partial-baseline") == 0
     assert _ran_ids(workspace) == ["refund", "greeting"]

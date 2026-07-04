@@ -27,11 +27,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import re
 import sys
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -46,9 +48,12 @@ EXIT_AGENT_ERROR = 3
 EXIT_INTERNAL = 4
 
 BASELINE_VERSION = 1
+ARTIFACT_VERSION = 1
+SUPPORTED_ARTIFACT_VERSIONS = {1}
 DEFAULT_BASELINE = ".agenteval/baseline.json"
 DEFAULT_CONFIG_FILE = ".agenteval.yaml"
 HTTP_TIMEOUT_S = 30
+HTTP_METHODS = {"GET", "POST", "PUT", "PATCH"}
 
 DETERMINISTIC_TYPES = {
     "contains",
@@ -61,14 +66,21 @@ DETERMINISTIC_TYPES = {
     "regex",
     "json_path_equals",
     "json_path_exists",
+    "status_code",
+    "max_duration_ms",
+    "tool_call_count",
+    "max_tool_calls",
+    "tool_sequence",
+    "json_path_contains",
+    "json_path_regex",
 }
 OPTIONAL_TYPES = {"semantic", "judge"}
 KNOWN_TYPES = DETERMINISTIC_TYPES | OPTIONAL_TYPES
 
 # Assertion types that must carry a "value" / "path" field to be meaningful.
 REQUIRES_VALUE = KNOWN_TYPES - {"json_path_exists", "judge"}
-REQUIRES_PATH = {"json_path_equals", "json_path_exists"}
-REQUIRES_INT_VALUE = {"max_steps", "min_steps"}
+REQUIRES_PATH = {"json_path_equals", "json_path_exists", "json_path_contains", "json_path_regex"}
+REQUIRES_INT_VALUE = {"max_steps", "min_steps", "status_code", "tool_call_count", "max_tool_calls"}
 
 
 class ScenarioError(Exception):
@@ -163,8 +175,21 @@ def load_scenarios(path: Path) -> list[dict]:
                 raise ScenarioError(f"{a_where}: '{a_type}' requires a string 'path' (e.g. $.field)")
             if a_type in REQUIRES_VALUE and "value" not in assertion:
                 raise ScenarioError(f"{a_where}: '{a_type}' requires a 'value' field")
-            if a_type in REQUIRES_INT_VALUE and not isinstance(assertion.get("value"), int):
+            if a_type in REQUIRES_INT_VALUE and (
+                not isinstance(assertion.get("value"), int)
+                or isinstance(assertion.get("value"), bool)
+            ):
                 raise ScenarioError(f"{a_where}: '{a_type}' requires an integer 'value'")
+            if a_type == "max_duration_ms":
+                value = assertion.get("value")
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    raise ScenarioError(
+                        f"{a_where}: 'max_duration_ms' requires a non-negative number 'value'"
+                    )
+            if a_type == "tool_sequence" and not isinstance(assertion.get("value"), list):
+                raise ScenarioError(
+                    f"{a_where}: 'tool_sequence' requires a list 'value' of tool names in order"
+                )
     return data
 
 
@@ -259,16 +284,46 @@ def normalize_http_response(status: int, body: str) -> dict:
     return {"output": body, "http_status": status}
 
 
-def make_http_agent(url: str, input_key: str = "input"):
-    """Return an agent callable that POSTs {input_key: user_input} to url."""
+def parse_http_headers(raw_headers: list[str]) -> dict[str, str]:
+    """Parse repeated --http-header values of the exact form "Name: Value"."""
+    headers: dict[str, str] = {}
+    for raw in raw_headers:
+        name, sep, value = raw.partition(":")
+        if not sep or not name.strip() or not value.strip():
+            raise ConfigError(f'invalid HTTP header {raw!r}; expected "Name: Value"')
+        headers[name.strip()] = value.strip()
+    return headers
+
+
+def make_http_agent(
+    url: str,
+    input_key: str = "input",
+    method: str = "POST",
+    timeout: float = HTTP_TIMEOUT_S,
+    headers: dict[str, str] | None = None,
+):
+    """Return an agent callable that sends scenario input to url.
+
+    POST/PUT/PATCH send a {input_key: user_input} JSON body; GET sends the
+    input as a ?input_key=... query parameter.
+    """
+    extra_headers = dict(headers or {})
 
     def call_http_agent(user_input: str) -> dict:
-        payload = json.dumps({input_key: user_input}).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
-        )
+        if method == "GET":
+            sep = "&" if "?" in url else "?"
+            full_url = url + sep + urllib.parse.urlencode({input_key: user_input})
+            req = urllib.request.Request(full_url, headers=extra_headers, method="GET")
+        else:
+            payload = json.dumps({input_key: user_input}).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json", **extra_headers},
+                method=method,
+            )
         try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 status = resp.status
                 body = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
@@ -322,7 +377,9 @@ def assertion_key(assertion: dict) -> str:
     return f"{a_type}:{assertion.get('value', '')}"
 
 
-def evaluate_assertion(assertion: dict, result, error: str | None = None) -> dict:
+def evaluate_assertion(
+    assertion: dict, result, error: str | None = None, duration_ms: float | None = None
+) -> dict:
     """Score one assertion against one agent run. Never raises."""
     a_type = assertion["type"]
     res = {
@@ -337,14 +394,15 @@ def evaluate_assertion(assertion: dict, result, error: str | None = None) -> dic
         res["reason"] = f"agent call failed: {error}"
         return res
     try:
-        _evaluate(a_type, assertion, result, res)
+        _evaluate(a_type, assertion, result, res, duration_ms)
     except Exception as exc:  # a broken assertion must fail the run, not crash the CLI
         res["passed"] = False
         res["reason"] = f"assertion could not be evaluated: {exc}"
     return res
 
 
-def _evaluate(a_type: str, assertion: dict, result, res: dict) -> None:
+def _evaluate(a_type: str, assertion: dict, result, res: dict,
+              duration_ms: float | None = None) -> None:
     value = assertion.get("value")
 
     if a_type in ("contains", "not_contains"):
@@ -425,6 +483,92 @@ def _evaluate(a_type: str, assertion: dict, result, res: dict) -> None:
             else:
                 res["reason"] = f"path {path} is {node!r}, expected {value!r}"
 
+    elif a_type == "status_code":
+        status = result.get("http_status") if isinstance(result, dict) else None
+        res["observed"] = status
+        if status is None:
+            res["reason"] = (
+                "result has no http_status field "
+                "(status_code assertions require --target HTTP mode)"
+            )
+        else:
+            res["passed"] = status == value
+            res["reason"] = f"http status {status} {'==' if res['passed'] else '!='} {value}"
+
+    elif a_type == "max_duration_ms":
+        res["observed"] = duration_ms
+        if duration_ms is None:
+            res["reason"] = "no run duration available for this result"
+        else:
+            res["passed"] = duration_ms <= value
+            res["reason"] = (
+                f"duration {duration_ms:.1f}ms "
+                f"{'<=' if res['passed'] else '>'} max {value}ms"
+            )
+
+    elif a_type in ("tool_call_count", "max_tool_calls"):
+        count = len(tool_names(result))
+        res["observed"] = count
+        if a_type == "tool_call_count":
+            res["passed"] = count == value
+            res["reason"] = f"{count} tool call(s), expected exactly {value}"
+        else:
+            res["passed"] = count <= value
+            res["reason"] = f"{count} tool call(s) {'<=' if res['passed'] else '>'} max {value}"
+
+    elif a_type == "tool_sequence":
+        tools = tool_names(result)
+        expected_seq = [str(v) for v in value]
+        res["expected"] = expected_seq
+        res["observed"] = tools
+        res["passed"] = tools == expected_seq
+        res["reason"] = (
+            f"tool calls match expected sequence {expected_seq}"
+            if res["passed"]
+            else f"tool calls {tools} != expected sequence {expected_seq}"
+        )
+
+    elif a_type == "json_path_contains":
+        path = assertion["path"]
+        res["expected"] = value
+        found, node = resolve_json_path(result, path)
+        res["observed"] = node if found else "<path not found>"
+        if not found:
+            res["reason"] = f"path {path} does not exist"
+        elif isinstance(node, str):
+            res["passed"] = str(value).lower() in node.lower()
+            res["reason"] = (
+                f"path {path} contains {value!r}"
+                if res["passed"]
+                else f"path {path} value {node!r} does not contain {value!r}"
+            )
+        elif isinstance(node, list):
+            res["passed"] = value in node or str(value) in [str(x) for x in node]
+            res["reason"] = (
+                f"path {path} list contains {value!r}"
+                if res["passed"]
+                else f"path {path} list {node!r} does not contain {value!r}"
+            )
+        else:
+            res["reason"] = (
+                f"path {path} is {type(node).__name__}, expected a string or list"
+            )
+
+    elif a_type == "json_path_regex":
+        path = assertion["path"]
+        res["expected"] = value
+        found, node = resolve_json_path(result, path)
+        res["observed"] = node if found else "<path not found>"
+        if not found:
+            res["reason"] = f"path {path} does not exist"
+        else:
+            res["passed"] = re.search(str(value), str(node)) is not None
+            res["reason"] = (
+                f"path {path} matches /{value}/"
+                if res["passed"]
+                else f"path {path} value {node!r} does not match /{value}/"
+            )
+
     elif a_type == "semantic":
         # Optional add-on stub: never required, never auto-installed.
         try:
@@ -457,7 +601,7 @@ def run_scenario(scenario: dict, agent_fn, runs: int) -> dict:
             error = f"{type(exc).__name__}: {exc}"
         duration_ms = (time.perf_counter() - start) * 1000
         assertion_results = [
-            evaluate_assertion(a, result, error) for a in scenario["assert"]
+            evaluate_assertion(a, result, error, duration_ms) for a in scenario["assert"]
         ]
         run_records.append(
             {
@@ -543,15 +687,55 @@ def write_baseline(
 
 
 def load_baseline(path: Path) -> dict:
+    if not path.exists():
+        raise ConfigError(f"baseline file not found: {path}")
     try:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
+        raise ConfigError(
             f"baseline file {path} is unreadable or corrupt ({exc}); "
             f"delete it or pass --update-baseline after fixing"
         ) from exc
     if not isinstance(data, dict) or not isinstance(data.get("scenarios"), dict):
-        raise RuntimeError(f"baseline file {path} has unexpected shape (missing 'scenarios' map)")
+        raise ConfigError(f"baseline file {path} has unexpected shape (missing 'scenarios' map)")
+    return data
+
+
+def load_artifact(path: Path) -> dict:
+    """Read and validate a --json-out run artifact for baseline promote/diff.
+
+    Artifacts without artifact_version (pre-v0.3) are tolerated when the rest
+    of the shape is recognizable; unsupported future versions are rejected.
+    """
+    if not path.exists():
+        raise ConfigError(f"run artifact not found: {path}")
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"run artifact {path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"run artifact {path} must be a JSON object")
+    version = data.get("artifact_version")
+    if version is not None and version not in SUPPORTED_ARTIFACT_VERSIONS:
+        raise ConfigError(
+            f"unsupported artifact_version {version!r} in {path}; this agenteval "
+            f"supports: {', '.join(str(v) for v in sorted(SUPPORTED_ARTIFACT_VERSIONS))}"
+        )
+    scenarios = data.get("scenarios")
+    if not isinstance(scenarios, list) or not all(
+        isinstance(s, dict) and isinstance(s.get("id"), str) and "pass_rate" in s
+        for s in scenarios
+    ):
+        raise ConfigError(
+            f"{path} does not look like an agenteval run artifact "
+            f"(expected a 'scenarios' list of results with 'id' and 'pass_rate'; "
+            f"create one with: agenteval run ... --json-out {path})"
+        )
+    for sr in scenarios:  # normalize pre-v0.2 artifacts that lack these fields
+        sr.setdefault("min_pass_rate", 1.0)
+        sr.setdefault("passed", sr["pass_rate"] >= sr["min_pass_rate"])
+        sr.setdefault("runs", 1)
+        sr.setdefault("assertions", {})
     return data
 
 
@@ -810,6 +994,10 @@ CONFIG_SCHEMA: dict[str, type] = {
     "include_tags": list,
     "exclude_tags": list,
     "http_input_key": str,
+    "http_timeout": float,  # int or float accepted (special-cased below)
+    "http_headers": list,
+    "http_bearer_token_env": str,
+    "http_method": str,
 }
 
 
@@ -837,6 +1025,10 @@ def load_config(path: Path | None) -> dict:
                 f"{path}: unknown config key {key!r}; "
                 f"known keys: {', '.join(sorted(CONFIG_SCHEMA))}"
             )
+        if key == "http_timeout":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ConfigError(f"{path}: config key 'http_timeout' must be a number")
+            continue
         if not isinstance(value, expected) or (isinstance(value, bool) and expected is not bool):
             raise ConfigError(f"{path}: config key {key!r} must be a {expected.__name__}")
         if expected is list and not all(isinstance(v, str) for v in value):
@@ -867,19 +1059,53 @@ def resolve_settings(args: argparse.Namespace) -> dict:
         "require_baseline": args.require_baseline or config.get("require_baseline", False),
         "fail_on_missing": args.fail_on_missing or config.get("fail_on_missing", False),
         "update_baseline": args.update_baseline,
+        "allow_partial_baseline": args.allow_partial_baseline,
         "scenario_ids": args.scenario,
         "include_tags": pick(args.include_tag, "include_tags"),
         "exclude_tags": pick(args.exclude_tag, "exclude_tags"),
+        "http_timeout": pick(args.http_timeout, "http_timeout", HTTP_TIMEOUT_S),
+        "http_method": str(pick(args.http_method, "http_method", "POST")).upper(),
+        "http_headers": pick(args.http_header, "http_headers", []),
+        "http_bearer_token_env": pick(args.http_bearer_token_env, "http_bearer_token_env"),
     }
     if settings["agent"] and settings["target"]:
         raise ConfigError("--agent and --target are mutually exclusive; pass exactly one")
     if not settings["agent"] and not settings["target"]:
         raise ConfigError("one of --agent (module:function) or --target (URL) is required")
-    if settings["target"] and not settings["target"].startswith(("http://", "https://")):
-        raise ConfigError(f"--target must be an http(s) URL, got {settings['target']!r}")
     if settings["runs"] is not None and settings["runs"] < 1:
         raise ConfigError("--runs must be >= 1")
+    if settings["target"]:
+        _resolve_http_settings(settings)
     return settings
+
+
+def _resolve_http_settings(settings: dict) -> None:
+    """Validate --target HTTP options and build the final header dict in place."""
+    if not settings["target"].startswith(("http://", "https://")):
+        raise ConfigError(f"--target must be an http(s) URL, got {settings['target']!r}")
+    if settings["http_method"] not in HTTP_METHODS:
+        raise ConfigError(
+            f"unsupported --http-method {settings['http_method']!r}; "
+            f"allowed: {', '.join(sorted(HTTP_METHODS))}"
+        )
+    timeout = settings["http_timeout"]
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ConfigError(f"--http-timeout must be a positive number of seconds, got {timeout!r}")
+    headers = parse_http_headers(settings["http_headers"])
+    token_env = settings["http_bearer_token_env"]
+    if token_env:
+        if any(name.lower() == "authorization" for name in headers):
+            raise ConfigError(
+                "--http-bearer-token-env conflicts with an explicit Authorization header; "
+                "pass only one"
+            )
+        token = os.environ.get(token_env, "")
+        if not token:
+            raise ConfigError(
+                f"--http-bearer-token-env: environment variable {token_env!r} is not set or empty"
+            )
+        headers["Authorization"] = f"Bearer {token}"
+    settings["http_headers"] = headers
 
 
 # ---------------------------------------------------------------------------
@@ -905,9 +1131,24 @@ def cmd_run(args: argparse.Namespace) -> int:
     if settings["require_baseline"] and not baseline_exists:
         # CI safety: a fresh runner must never mint a green baseline by accident.
         raise ConfigError(f"Baseline required but not found: {baseline_path}")
+    filters_active = bool(
+        settings["scenario_ids"] or settings["include_tags"] or settings["exclude_tags"]
+    )
+    if not baseline_exists and filters_active and not settings["allow_partial_baseline"]:
+        # A baseline minted from a filtered run silently under-covers the suite.
+        raise ConfigError(
+            "Refusing to create a new baseline from a filtered run. "
+            "Re-run without filters or pass --allow-partial-baseline."
+        )
 
     if settings["target"]:
-        agent_fn = make_http_agent(settings["target"], settings["http_input_key"])
+        agent_fn = make_http_agent(
+            settings["target"],
+            settings["http_input_key"],
+            method=settings["http_method"],
+            timeout=settings["http_timeout"],
+            headers=settings["http_headers"],
+        )
         agent_label = settings["target"]
     else:
         agent_fn = load_agent(settings["agent"])  # AgentLoadError -> exit 3
@@ -949,6 +1190,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     run_counts = {sr["runs"] for sr in scenario_results}
     artifact = {
         "version": 1,
+        "artifact_version": ARTIFACT_VERSION,
         "started_at": started_at,
         "completed_at": _utcnow(),
         "duration_ms": duration_ms,
@@ -986,6 +1228,143 @@ def cmd_run(args: argparse.Namespace) -> int:
     return exit_code
 
 
+# ---------------------------------------------------------------------------
+# init / validate / baseline subcommands
+# ---------------------------------------------------------------------------
+
+INIT_CONFIG_TEMPLATE = """\
+# agenteval config — CLI flags override these values.
+# For CI, add: require_baseline: true (and commit your baseline file).
+baseline: .agenteval/baseline.json
+json_out: .agenteval/latest.json
+junit_out: .agenteval/junit.xml
+markdown_out: .agenteval/report.md
+fail_on_missing: false
+"""
+
+INIT_SCENARIOS_TEMPLATE = """\
+# agenteval scenarios — deterministic assertions only; no model dependencies.
+- id: smoke_basic
+  tags: [smoke]
+  input: "I want a refund for order 123"
+  assert:
+    - type: contains
+      value: refund
+    - type: max_steps
+      value: 5
+"""
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    if args.agent and args.target:
+        raise ConfigError("--agent and --target are mutually exclusive")
+
+    def ensure_file(path: Path, content: str) -> None:
+        if path.exists() and not args.force:
+            print(f"skipped {path} (exists; use --force to overwrite)")
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        print(f"created {path}")
+
+    state_dir = Path(".agenteval")
+    if state_dir.exists():
+        print(f"skipped {state_dir}/ (exists)")
+    else:
+        state_dir.mkdir(parents=True)
+        print(f"created {state_dir}/")
+
+    config_text = INIT_CONFIG_TEMPLATE
+    if args.http_input_key:
+        config_text += f"http_input_key: {args.http_input_key}\n"
+    ensure_file(Path(args.config_file), config_text)
+    ensure_file(Path(args.scenario_file), INIT_SCENARIOS_TEMPLATE)
+
+    run_cmd = f"uv run agenteval.py run {args.scenario_file}"
+    if args.agent:
+        run_cmd += f" --agent {args.agent}"
+    elif args.target:
+        run_cmd += f" --target {args.target}"
+    else:
+        run_cmd += " --agent yourmodule:agent"
+    print(f"Next: {run_cmd}")
+    return EXIT_OK
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Validate scenarios + config + filters without importing or calling an agent."""
+    config = load_config(Path(args.config) if args.config else None)
+    scenarios = load_scenarios(Path(args.scenarios))
+    include_tags = args.include_tag if args.include_tag is not None else config.get("include_tags")
+    exclude_tags = args.exclude_tag if args.exclude_tag is not None else config.get("exclude_tags")
+    to_run, skipped = select_scenarios(scenarios, args.scenario, include_tags, exclude_tags)
+
+    assertion_count = sum(len(s["assert"]) for s in scenarios)
+    print(
+        f"OK {args.scenarios}: {len(scenarios)} scenario(s), "
+        f"{assertion_count} assertion(s) valid"
+    )
+    print(f"Runnable after filters: {len(to_run)}; skipped: {len(skipped)}")
+    if config:
+        print(f"Config OK ({len(config)} key(s))")
+    return EXIT_OK
+
+
+def cmd_baseline_show(args: argparse.Namespace) -> int:
+    baseline_path = Path(args.baseline)
+    baseline = load_baseline(baseline_path)  # ConfigError -> exit 2
+    scenarios = baseline["scenarios"]
+    print(
+        f"Baseline {baseline_path} (version {baseline.get('version', '?')}, "
+        f"created {baseline.get('created_at', 'unknown')}): {len(scenarios)} scenario(s)"
+    )
+    for sid, entry in scenarios.items():
+        print(f"  {sid}: pass_rate {_pct(entry.get('pass_rate', 0.0))} ({entry.get('runs', '?')} run(s))")
+        for key, passing in entry.get("assertions", {}).items():
+            print(f"    {'PASS' if passing else 'FAIL'} {key}")
+    return EXIT_OK
+
+
+PROMOTABLE_STATUSES = {"pass", "regressed", "baseline_created", "baseline_updated", "fail_missing"}
+
+
+def cmd_baseline_promote(args: argparse.Namespace) -> int:
+    artifact = load_artifact(Path(args.from_path))
+    status = artifact.get("status")
+    if status not in PROMOTABLE_STATUSES:
+        raise ConfigError(
+            f"refusing to promote artifact with status {status!r}; "
+            f"promotable statuses: {', '.join(sorted(PROMOTABLE_STATUSES))}"
+        )
+    if status == "regressed" and not args.force:
+        raise ConfigError(
+            "refusing to promote a REGRESSED artifact to baseline; pass --force to accept "
+            "the regressed behavior as the new reference"
+        )
+    baseline_path = Path(args.baseline)
+    if baseline_path.exists() and not args.force:
+        raise ConfigError(
+            f"baseline already exists: {baseline_path}; pass --force to overwrite"
+        )
+    write_baseline(baseline_path, artifact["scenarios"])
+    print(f"Promoted {len(artifact['scenarios'])} scenario(s) from {args.from_path} to {baseline_path}")
+    return EXIT_OK
+
+
+def cmd_baseline_diff(args: argparse.Namespace) -> int:
+    """Offline diff of a --json-out artifact against a baseline; no agent runs."""
+    artifact = load_artifact(Path(args.from_path))
+    baseline = load_baseline(Path(args.baseline))
+    regressed, events = diff_against_baseline(baseline, artifact["scenarios"])
+    for ev in events:
+        print(format_event(ev))
+    if regressed:
+        print("Overall: REGRESSED")
+        return EXIT_REGRESSION
+    print("Overall: PASS (no regression)")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agenteval",
@@ -999,6 +1378,22 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--http-input-key", default=None,
         help="JSON key for the scenario input in --target POST bodies (default: input)",
+    )
+    run_p.add_argument(
+        "--http-timeout", type=float, default=None,
+        help=f"HTTP timeout in seconds for --target (default: {HTTP_TIMEOUT_S})",
+    )
+    run_p.add_argument(
+        "--http-header", action="append", default=None, metavar='"Name: Value"',
+        help="extra HTTP header for --target requests (repeatable)",
+    )
+    run_p.add_argument(
+        "--http-bearer-token-env", default=None, metavar="ENV_VAR",
+        help="read a bearer token from this env var and send Authorization: Bearer <token>",
+    )
+    run_p.add_argument(
+        "--http-method", default=None,
+        help="HTTP method for --target: GET, POST, PUT, or PATCH (default: POST)",
     )
     run_p.add_argument("--baseline", default=None,
                        help=f"baseline JSON path (default: {DEFAULT_BASELINE})")
@@ -1016,6 +1411,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--update-baseline", action="store_true",
         help="overwrite the existing baseline with the current results",
+    )
+    run_p.add_argument(
+        "--allow-partial-baseline", action="store_true",
+        help="allow creating a new baseline from a filtered run",
     )
     run_p.add_argument(
         "--fail-on-missing", action="store_true",
@@ -1038,6 +1437,55 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"config YAML path (default: {DEFAULT_CONFIG_FILE} if present); CLI flags win",
     )
     run_p.set_defaults(func=cmd_run)
+
+    init_p = sub.add_parser("init", help="scaffold .agenteval/, config, and a starter scenario file")
+    init_p.add_argument("--force", action="store_true", help="overwrite existing files")
+    init_p.add_argument("--scenario-file", default="scenarios.yaml", help="scenario file to create")
+    init_p.add_argument("--config-file", default=DEFAULT_CONFIG_FILE, help="config file to create")
+    init_p.add_argument("--agent", default=None, help="module:function to suggest in next steps")
+    init_p.add_argument("--target", default=None, help="HTTP URL to suggest in next steps")
+    init_p.add_argument(
+        "--http-input-key", default=None, help="write http_input_key into the generated config"
+    )
+    init_p.set_defaults(func=cmd_init)
+
+    val_p = sub.add_parser(
+        "validate", help="validate scenarios, config, and filters without running an agent"
+    )
+    val_p.add_argument("scenarios", help="path to scenarios YAML file")
+    val_p.add_argument("--config", default=None, help="config YAML path")
+    val_p.add_argument("--scenario", action="append", default=None, metavar="ID")
+    val_p.add_argument("--include-tag", action="append", default=None, metavar="TAG")
+    val_p.add_argument("--exclude-tag", action="append", default=None, metavar="TAG")
+    val_p.set_defaults(func=cmd_validate)
+
+    base_p = sub.add_parser("baseline", help="inspect, promote, or diff baseline files")
+    base_sub = base_p.add_subparsers(dest="baseline_command", required=True)
+
+    show_p = base_sub.add_parser("show", help="print baseline scenarios and assertion states")
+    show_p.add_argument("--baseline", default=DEFAULT_BASELINE)
+    show_p.set_defaults(func=cmd_baseline_show)
+
+    promote_p = base_sub.add_parser(
+        "promote", help="promote a --json-out run artifact into the baseline (no agent rerun)"
+    )
+    promote_p.add_argument("--from", dest="from_path", required=True, metavar="ARTIFACT",
+                           help="run artifact JSON created with --json-out")
+    promote_p.add_argument("--baseline", default=DEFAULT_BASELINE)
+    promote_p.add_argument(
+        "--force", action="store_true",
+        help="overwrite an existing baseline / accept a regressed artifact",
+    )
+    promote_p.set_defaults(func=cmd_baseline_promote)
+
+    diff_p = base_sub.add_parser(
+        "diff", help="diff a --json-out run artifact against a baseline (no agent rerun)"
+    )
+    diff_p.add_argument("--from", dest="from_path", required=True, metavar="ARTIFACT",
+                        help="run artifact JSON created with --json-out")
+    diff_p.add_argument("--baseline", default=DEFAULT_BASELINE)
+    diff_p.set_defaults(func=cmd_baseline_diff)
+
     return parser
 
 
