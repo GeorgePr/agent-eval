@@ -3,4 +3,7 @@ __pycache__/
 .venv/
 .agenteval/
 .pytest_cache/
+.ruff_cache/
 uv.lock
+dist/
+*.egg-info/

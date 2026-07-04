@@ -24,12 +24,17 @@ Exit codes:
 
 from __future__ import annotations
 
+__version__ = "0.4.0"
+
 import argparse
 import importlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import urllib.error
@@ -1365,10 +1370,210 @@ def cmd_baseline_diff(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------------
+# doctor — sanity-check local setup without importing/calling an agent
+# ---------------------------------------------------------------------------
+
+def _nearest_existing_dir(path: Path) -> Path:
+    """Walk up until an existing directory is found (for writability probing)."""
+    probe = path if str(path) else Path(".")
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    return probe
+
+
+def _dir_writable(path: Path) -> bool:
+    probe = _nearest_existing_dir(path)
+    return probe.is_dir() and os.access(probe, os.W_OK)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Report on Python, pyyaml, config, scenarios, baseline, and artifact dirs.
+    Never imports or calls an agent. Exit 0 healthy, 2 on any problem."""
+    problems: list[str] = []
+    print("AgentEval Doctor")
+    print()
+
+    py = sys.version_info
+    py_ok = (py.major, py.minor) >= (3, 10)
+    print(f"Python: {'OK' if py_ok else 'FAIL'} {py.major}.{py.minor}.{py.micro}")
+    if not py_ok:
+        problems.append("Python 3.10+ is required")
+
+    print(f"PyYAML: OK {getattr(yaml, '__version__', 'unknown')}")
+    print(f"Working dir: {Path.cwd()}")
+
+    config: dict = {}
+    config_path = Path(args.config) if args.config else Path(DEFAULT_CONFIG_FILE)
+    if args.config or config_path.exists():
+        try:
+            config = load_config(Path(args.config) if args.config else None)
+            print(f"Config: OK {config_path} ({len(config)} key(s))")
+        except ConfigError as exc:
+            print(f"Config: FAIL {exc}")
+            problems.append(str(exc))
+    else:
+        print("Config: none (no .agenteval.yaml found; built-in defaults apply)")
+
+    if args.scenario_file:
+        try:
+            scenarios = load_scenarios(Path(args.scenario_file))
+            assertions = sum(len(s["assert"]) for s in scenarios)
+            print(
+                f"Scenarios: OK {args.scenario_file} "
+                f"({len(scenarios)} scenario(s), {assertions} assertion(s))"
+            )
+        except ScenarioError as exc:
+            print(f"Scenarios: FAIL {exc}")
+            problems.append(str(exc))
+    else:
+        print("Scenarios: skipped (pass --scenario-file PATH to check)")
+
+    baseline_path = Path(args.baseline) if args.baseline else Path(
+        config.get("baseline", DEFAULT_BASELINE)
+    )
+    if baseline_path.exists():
+        try:
+            baseline = load_baseline(baseline_path)
+            print(f"Baseline: OK {baseline_path} ({len(baseline['scenarios'])} scenario(s))")
+        except ConfigError as exc:
+            print(f"Baseline: FAIL {exc}")
+            problems.append(str(exc))
+    else:
+        print(f"Baseline: none yet at {baseline_path} (a first run will create it)")
+
+    artifact_targets = [
+        (key, Path(config[key]).parent)
+        for key in ("json_out", "junit_out", "markdown_out")
+        if config.get(key)
+    ]
+    if artifact_targets:
+        for key, directory in artifact_targets:
+            shown = directory if str(directory) else Path(".")
+            ok = _dir_writable(directory)
+            print(f"Artifact dir ({key}): {'OK' if ok else 'FAIL'} {shown}{os.sep}")
+            if not ok:
+                problems.append(f"artifact directory not writable for {key}: {shown}")
+    else:
+        print("Artifact dirs: none configured (json_out/junit_out/markdown_out)")
+
+    print()
+    if problems:
+        print(f"UNHEALTHY: {len(problems)} problem(s) found")
+        return EXIT_INVALID_SCENARIOS
+    print("HEALTHY")
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# selftest — zero-setup proof the core loop works, in a throwaway workspace
+# ---------------------------------------------------------------------------
+
+_SELFTEST_AGENT_GOOD = (
+    "def agent(user_input):\n"
+    "    if 'refund' in user_input.lower():\n"
+    "        return {'output': 'Refund started.', 'tool_calls': ['lookup_order'], 'steps': 2}\n"
+    "    return {'output': 'How can I help?', 'tool_calls': [], 'steps': 1}\n"
+)
+_SELFTEST_AGENT_BROKEN = (
+    "def agent(user_input):\n"
+    "    return {'output': 'How can I help?', 'tool_calls': [], 'steps': 1}\n"
+)
+_SELFTEST_SCENARIOS = (
+    "- id: selftest_refund\n"
+    "  input: \"I want a refund for order 123\"\n"
+    "  assert:\n"
+    "    - type: contains\n"
+    "      value: refund\n"
+    "    - type: used_tool\n"
+    "      value: lookup_order\n"
+)
+
+
+def _selftest_run(cli_args: list[str], cwd: Path) -> int:
+    """Invoke this CLI as a subprocess in an isolated cwd. Overridable in tests."""
+    return subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), *cli_args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+    ).returncode
+
+
+def evaluate_selftest(work: Path, run_fn=None) -> list[dict]:
+    """Drive the core loop in `work` and return one record per expected step.
+
+    Steps: (1) first run creates baseline -> 0, (2) identical run passes -> 0,
+    (3) broken agent regresses -> 1. run_fn is injected so the outcome-checking
+    is testable without a real subprocess (resolved at call time so tests can
+    monkeypatch _selftest_run).
+    """
+    if run_fn is None:
+        run_fn = _selftest_run
+    (work / "scenarios.yaml").write_text(_SELFTEST_SCENARIOS)
+    (work / "myagent.py").write_text(_SELFTEST_AGENT_GOOD)
+    base_args = ["run", "scenarios.yaml", "--agent", "myagent:agent",
+                 "--baseline", "baseline.json"]
+
+    steps = [
+        ("first run creates baseline", list(base_args), 0),
+        ("identical run passes", list(base_args), 0),
+    ]
+    results = []
+    for name, cli_args, expected in steps:
+        actual = run_fn(cli_args, work)
+        results.append({"step": name, "expected": expected, "actual": actual,
+                        "ok": actual == expected})
+
+    (work / "myagent.py").write_text(_SELFTEST_AGENT_BROKEN)
+    actual = run_fn(list(base_args), work)
+    results.append({"step": "broken agent regresses (exit 1)", "expected": 1,
+                    "actual": actual, "ok": actual == 1})
+    return results
+
+
+def cmd_selftest(args: argparse.Namespace) -> int:
+    if args.tmp_dir:
+        parent = Path(args.tmp_dir)
+        if not parent.is_dir():
+            raise ConfigError(f"--tmp-dir is not an existing directory: {parent}")
+        # Always work inside a fresh subdirectory, so a non-empty --tmp-dir is safe.
+        work = Path(tempfile.mkdtemp(prefix="agenteval-selftest-", dir=str(parent)))
+    else:
+        work = Path(tempfile.mkdtemp(prefix="agenteval-selftest-"))
+
+    print("AgentEval selftest")
+    print(f"Workspace: {work}")
+    try:
+        results = evaluate_selftest(work)
+        for r in results:
+            mark = "OK" if r["ok"] else "FAIL"
+            print(f"  {mark} {r['step']} (expected exit {r['expected']}, got {r['actual']})")
+        healthy = all(r["ok"] for r in results)
+    finally:
+        if args.keep_dir:
+            print(f"Kept workspace: {work}")
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+
+    if healthy:
+        print("selftest: PASS — the core loop works with zero external dependencies")
+        return EXIT_OK
+    print("selftest: FAIL — core loop did not behave as expected")
+    return EXIT_INTERNAL
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agenteval",
         description="Run agent scenarios, score with deterministic assertions, diff vs baseline.",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"agenteval {__version__}",
+        help="print version and exit",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     run_p = sub.add_parser("run", help="run scenarios against an agent and diff against baseline")
@@ -1485,6 +1690,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="run artifact JSON created with --json-out")
     diff_p.add_argument("--baseline", default=DEFAULT_BASELINE)
     diff_p.set_defaults(func=cmd_baseline_diff)
+
+    doctor_p = sub.add_parser(
+        "doctor", help="sanity-check local setup/config without running an agent"
+    )
+    doctor_p.add_argument("--config", default=None, help="config YAML path to check")
+    doctor_p.add_argument("--scenario-file", default=None, help="scenario file to validate")
+    doctor_p.add_argument("--baseline", default=None, help="baseline JSON path to check")
+    doctor_p.set_defaults(func=cmd_doctor)
+
+    selftest_p = sub.add_parser(
+        "selftest", help="prove the core loop works in a throwaway workspace"
+    )
+    selftest_p.add_argument(
+        "--keep-dir", action="store_true", help="leave the temp workspace behind and print its path"
+    )
+    selftest_p.add_argument(
+        "--tmp-dir", default=None, help="create the workspace under this existing directory"
+    )
+    selftest_p.set_defaults(func=cmd_selftest)
 
     return parser
 

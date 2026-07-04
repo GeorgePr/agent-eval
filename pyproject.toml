@@ -1,16 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "agenteval"
-version = "0.1.0"
 description = "CLI-first agent regression testing: run agent -> score behavior -> diff against baseline -> exit non-zero on regression"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+keywords = ["agent", "regression", "testing", "ci", "llm", "evaluation"]
+dynamic = ["version"]
 dependencies = [
     "pyyaml>=6",
 ]
+
+[project.scripts]
+agenteval = "agenteval:main"
+
+[project.urls]
+Repository = "https://github.com/GeorgePr/agent-eval"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
 ]
+
+[tool.hatch.version]
+path = "agenteval.py"
+
+[tool.hatch.build.targets.wheel]
+include = ["agenteval.py"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
