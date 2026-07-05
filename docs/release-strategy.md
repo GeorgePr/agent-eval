@@ -52,8 +52,8 @@ On every push and pull request, [`ci.yml`](../.github/workflows/ci.yml):
   reads it dynamically for `uv build`).
 - A release tag must match that version. `release.yml` runs
   [`scripts/check_version.py`](../scripts/check_version.py) first and **fails the
-  release if the tag and `__version__` disagree** — so a `v0.4.0` tag can only
-  ship artifacts built from `__version__ == "0.4.0"`.
+  release if the tag and `__version__` disagree** — so a `vX.Y.Z` tag can only
+  ship artifacts built from `__version__ == "X.Y.Z"`.
 
 ## Local pre-tag check
 
