@@ -156,14 +156,30 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 - Root — `README.md`, `CHANGELOG.md`, `claude.md`, `SECURITY.md`,
   `CONTRIBUTING.md`, `SUPPORT.md`, `pyproject.toml`, `.gitignore`.
 
-## Commands run this session (DevOps governance)
+## v0.5.0 release outcome (this session)
 
-- `uv run pytest` → 193 passed
-- `uvx ruff check .` → clean
-- `uv build` → `agenteval-0.4.0` wheel + sdist
-- `python scripts/build_checksums.py --dist-dir dist` → SHA256SUMS written
-- `python scripts/verify_dist.py --dist-dir dist` → OK (after curating sdist include)
-- `sh scripts/release-check.sh` → OK end to end (incl. verify + checksums + wheel smoke)
+- **Dependabot: 4/4 merged (squash), none skipped** — PRs #1–#4 (checkout v7,
+  setup-uv v7, upload-artifact v7, setup-python v6). All green, diffs touched only
+  `uses:` lines. Default-branch CI green after merge (`c17a32d`).
+- **Release PR #5 (`release: prepare v0.5.0`) squash-merged** into the default
+  branch after CI passed → merge commit `2e9e8eb`. Base now has
+  `__version__ = "0.5.0"`; version guard passes.
+- **Claude chat/share links: none found**; guardrail test added.
+- **⛔ Tag `v0.5.0` NOT pushed — BLOCKED.** `git push origin v0.5.0` returns
+  **HTTP 403** from the git proxy. Branch pushes work this session, so the proxy
+  policy specifically blocks pushing tag refs. Local tag `v0.5.0` → `2e9e8eb`
+  exists but is not on the remote. Therefore **`release.yml` has NOT run and no
+  GitHub Release / artifacts exist yet.** Not retried (403 = policy denial).
+
+## Commands run this session (v0.5.0 release-prep)
+
+- Inspected + squash-merged Dependabot PRs #1–#4 and release PR #5 (GitHub MCP).
+- `uv run pytest` → 198 passed; `uvx ruff check .` → clean
+- `uv build` → `agenteval-0.5.0` wheel + sdist
+- `python scripts/build_checksums.py --dist-dir dist` → SHA256SUMS (0.5.0)
+- `python scripts/verify_dist.py --dist-dir dist` → OK
+- `sh scripts/release-check.sh` → OK end to end
+- `python scripts/check_version.py v0.5.0` → OK (exit 0); `v9.9.9` → mismatch (exit 1, expected)
 
 ## Known limitations
 
@@ -180,18 +196,29 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 
 ## Manual GitHub settings still required (not enforceable by repo files)
 
-- Branch protection on `main`; mark **`test`** as a required status check.
+- Branch protection on the default branch
+  (`claude/agent-regression-cli-mvp-5pkspw`; no `main` exists); mark **`test`**
+  as a required status check.
 - Enable Private vulnerability reporting (for SECURITY.md flow).
 - Create the `pypi` environment with required reviewers (only if publishing).
 - Private repos: set a **$0 billing spending limit**.
 - Optional: `.github/CODEOWNERS`, required signed commits.
 - See `docs/repo-governance.md` for the full checklist.
 
+## Manual follow-up still required
+
+1. **Push the `v0.5.0` tag from an environment allowed to push tags** (the
+   in-session git proxy blocks tag pushes with 403). Tag must point at `2e9e8eb`
+   on the default branch: `git tag v0.5.0 2e9e8eb && git push origin v0.5.0`.
+   That triggers `release.yml`, whose tag/version guard will pass (version 0.5.0).
+2. After the tag is pushed, verify the `release.yml` run is green and the GitHub
+   Release has wheel + sdist + `SHA256SUMS` attached (see `docs/runbooks/release.md`).
+3. Enable branch protection in the GitHub UI (required check: `test`).
+4. `publish.yml` stays inert until a PyPI Trusted Publisher + `pypi` environment
+   are configured; do not enable automatic PyPI publishing.
+
 ## Next recommended step
 
-1. Push; confirm CI (`test`) runs green on GitHub and Dependabot opens expected PRs.
-2. Enable branch protection in the GitHub UI (required check: `test`).
-3. Cut a real **v0.5.0** (bump `__version__`, finalize CHANGELOG, tag `v0.5.0`) to
-   exercise the release workflow end to end.
-4. **Do not add product features** until that first real release has been exercised;
-   after that, dogfood against a real agent and capture the first regression case study.
+Complete the tag push above to finish the v0.5.0 release, then **do not add
+product features** until that first real release workflow has been exercised;
+after that, dogfood against a real agent and capture the first regression case study.
