@@ -4,29 +4,30 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## Current status
 
-- **DevOps governance & release hardening — implemented (Unreleased, part of
-  v0.5.0).** Repo governance docs, PR/issue templates, SECURITY/CONTRIBUTING/
-  SUPPORT, Dependabot, workflow timeouts, release-artifact checksums (SHA256SUMS),
-  distribution sanity checks (`verify_dist`), and CI/release/rollback runbooks.
-  No product-behavior change; `agenteval.py` untouched. Only packaging config
-  added to `pyproject.toml` (curated sdist include list).
-- **v0.5.0 CI/CD & release hardening — implemented (Unreleased).** GitHub Actions
-  CI + tag-driven release workflow + optional manual OIDC publish workflow +
-  release/publishing docs + local release-check helper. Product code
-  (`agenteval.py`) unchanged; `__version__` still `0.4.0` until v0.5.0 is cut.
-- Tests: **193 passing** (adds `test_devops.py` 34 to the prior 159).
-  `uvx ruff check .` clean; `uv build`, `verify_dist`, `build_checksums`,
-  `release-check.sh` all green.
-- Version: **0.4.0** (`__version__` in `agenteval.py`).
+- **v0.5.0 release-prep in progress (this session).** Goal: merge the 4
+  Dependabot PRs, prep the release on `release/v0.5.0`, PR + squash-merge it, then
+  tag `v0.5.0`. No product behavior changed; `agenteval.py` edited only to bump
+  `__version__` to `0.5.0`.
+- **Branch topology note:** the repo's **default/integration branch is
+  `claude/agent-regression-cli-mvp-5pkspw`** — there is **no `main`**. All PRs
+  (Dependabot + release) target that branch; the task's "main" maps to it.
+- **Dependabot: all 4 GitHub Actions PRs merged (squash).** #1 checkout v4→v7,
+  #2 setup-uv v5→v7, #3 upload-artifact v4→v7, #4 setup-python v5→v6. All were
+  green (`test`), diffs touched only `uses:` lines, none skipped. Merged base
+  `c17a32d`; default-branch CI green after merge.
+- Version: **0.5.0** (`__version__` in `agenteval.py`).
 - Single-file implementation: `agenteval.py`.
 - Runtime deps: **stdlib + pyyaml only**. Dev dep: **pytest only**. No mypy.
 - Packaging: hatchling backend + `agenteval` console script; `uv build` works.
   `uv run agenteval.py ...` still works unchanged.
 - Product boundary unchanged: deterministic agent regression testing —
   `run -> score -> diff -> artifact -> exit code`. Zero LLM by default.
-- Tests: **159 passing** (test_agenteval 26, test_v02 30, test_v03 48,
-  test_v04 35, test_release 20). `uvx ruff check .` clean.
-- v0.4 released at commit `4a8e808`.
+- Tests: **198 passing** (test_agenteval 26, test_v02 30, test_v03 48,
+  test_v04 35, test_release 25, test_devops 34). `uvx ruff check .` clean.
+- Prior release: v0.4 at commit `4a8e808`. DevOps hardening at `e071dfa`.
+- Claude chat/share links in docs: **none found** (searched README, docs/,
+  CHANGELOG, CONTRIBUTING, SUPPORT, SECURITY, .github, claude.md); guardrail test
+  added.
 
 ## CI/CD workflow summary
 

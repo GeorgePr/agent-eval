@@ -132,3 +132,68 @@ def test_publish_workflow_is_manual_and_oidc_only():
     # Trusted Publishing via OIDC, gated behind an environment.
     assert "id-token: write" in text
     assert "environment: pypi" in text
+
+
+# ---------------------------------------------------------------------------
+# v0.5.0 release-prep guardrails
+# ---------------------------------------------------------------------------
+
+RELEASE_VERSION = "0.5.0"
+
+# User-facing docs that must not contain a public Claude chat/share link.
+DOC_FILES = [
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SUPPORT.md",
+    "SECURITY.md",
+    "claude.md",
+]
+DOC_DIRS = ["docs", ".github"]
+
+# Matches chat/share LINKS only — not legitimate mentions of the word "Claude"
+# or references to the maintainer file `claude.md`.
+import re  # noqa: E402
+
+CHAT_LINK = re.compile(
+    r"claude\.ai|chat\.claude|Claude (chat|share) link|anthropic\.com/share",
+    re.IGNORECASE,
+)
+
+
+def test_version_is_release_version():
+    from agenteval import __version__
+
+    assert __version__ == RELEASE_VERSION
+
+
+def test_check_version_accepts_release_tag():
+    assert cv.check_tag_matches_version(f"v{RELEASE_VERSION}", RELEASE_VERSION)
+    assert cv.main([f"v{RELEASE_VERSION}"]) == 0
+
+
+def test_check_version_rejects_mismatched_tag():
+    assert cv.main(["v9.9.9"]) == 1
+
+
+def _doc_paths():
+    paths = [REPO / f for f in DOC_FILES if (REPO / f).is_file()]
+    for d in DOC_DIRS:
+        paths += [p for p in (REPO / d).rglob("*") if p.is_file() and p.suffix in {".md", ".yml"}]
+    return paths
+
+
+def test_no_claude_chat_or_share_links_in_docs():
+    offenders = []
+    for path in _doc_paths():
+        for i, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
+            if CHAT_LINK.search(line):
+                offenders.append(f"{path.relative_to(REPO)}:{i}: {line.strip()}")
+    assert not offenders, "Claude chat/share links found in docs:\n" + "\n".join(offenders)
+
+
+def test_changelog_has_release_section():
+    changelog = (REPO / "CHANGELOG.md").read_text()
+    assert f"## v{RELEASE_VERSION}" in changelog
+    # The v0.5.0 content must no longer sit under an Unreleased placeholder.
+    assert "## Unreleased (v0.5.0)" not in changelog

@@ -5,10 +5,12 @@ version. The product boundary is unchanged throughout: deterministic agent
 regression testing — `run -> score -> diff -> artifact -> exit code`, zero LLM by
 default, stdlib + pyyaml only.
 
-## Unreleased (v0.5.0)
+## v0.5.0
 
-CI/CD and release hardening. No product-behavior change; `agenteval.py` untouched
-except the version bump when this is cut.
+CI/CD and release hardening. No product-behavior change; `agenteval.py` changed
+only to bump `__version__` to `0.5.0`. Also includes the merged Dependabot
+GitHub Actions updates (checkout v7, setup-python v6, setup-uv v7,
+upload-artifact v7) and removes stale version pins from the docs.
 
 - **GitHub Actions CI** (`.github/workflows/ci.yml`): tests, ruff, `uv build`,
   and both script + installed-wheel smoke tests on every push/PR. Linux-only,
