@@ -4,11 +4,14 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## Current status
 
-- **In progress (this session): docs cleanup + v0.5.0 tag retry.** Goal: remove
-  repo-visibility/cost comparisons from Markdown docs, fix the broken README
-  packaging anchor, merge via squash PR after CI, then retry the previously
-  blocked `v0.5.0` tag push from the updated default-branch tip. No product
-  behavior changes; `agenteval.py` untouched.
+- **Docs cleanup done; v0.5.0 tag push STILL BLOCKED (this session).**
+  Repo-visibility/cost comparisons removed from Markdown docs and the broken
+  README packaging anchor fixed via PR #6 (squash-merged after CI → `ba56f11`).
+  Two docs guardrail tests added (visibility phrases; relative-link/anchor
+  checker) — 200 tests passing. The `v0.5.0` tag was recreated locally at
+  `ba56f11` and the push retried **once**: same **HTTP 403** from the git proxy
+  on tag refs. No remote tag, `release.yml` still 0 runs, no GitHub Release.
+  No product behavior changes; `agenteval.py` untouched.
 - **v0.5.0 release-prep (previous session).** Merged the 4 Dependabot PRs,
   prepped the release on `release/v0.5.0`, PR #5 squash-merged (`2e9e8eb`);
   `agenteval.py` edited only to bump `__version__` to `0.5.0`. Tag push was
@@ -162,7 +165,26 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 - Root — `README.md`, `CHANGELOG.md`, `claude.md`, `SECURITY.md`,
   `CONTRIBUTING.md`, `SUPPORT.md`, `pyproject.toml`, `.gitignore`.
 
-## v0.5.0 release outcome (this session)
+## Docs cleanup + tag retry outcome (latest session)
+
+- **Docs cleanup PR #6 squash-merged** (`ba56f11`) after CI green: removed
+  public/private repo cost comparisons from `docs/release-strategy.md`,
+  `docs/ci.md`, `docs/repo-governance.md`, `CHANGELOG.md`, `claude.md`;
+  replaced with neutral wording (hosted Ubuntu runners, small workflows, short
+  retention, monitor Actions usage, self-hosted/Jenkins/Woodpecker optional).
+- **README packaging link fixed**: `[Packaging](#packaging)` → 
+  `[Packaging & releases](#packaging--releases)` (heading had been renamed; no
+  new doc file needed).
+- **Guardrail tests added** in `tests/test_devops.py`: Markdown must not contain
+  repo-visibility/cost phrases; relative `.md` links and same-file anchors in
+  README/docs must resolve. Claude chat/share link guard preserved (still none).
+- **⛔ Tag retry failed again**: local `v0.5.0` retagged at `ba56f11`
+  (old local tag at `2e9e8eb` deleted locally; nothing force-pushed);
+  `git push origin refs/tags/v0.5.0` → **HTTP 403** (git proxy blocks tag
+  refs; branch pushes work). Tried once, then stopped per policy. No API/
+  `gh release create` workaround attempted.
+
+## v0.5.0 release outcome (release-prep session)
 
 - **Dependabot: 4/4 merged (squash), none skipped** — PRs #1–#4 (checkout v7,
   setup-uv v7, upload-artifact v7, setup-python v6). All green, diffs touched only
@@ -214,9 +236,11 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 ## Manual follow-up still required
 
 1. **Push the `v0.5.0` tag from an environment allowed to push tags** (the
-   in-session git proxy blocks tag pushes with 403). Tag must point at `2e9e8eb`
-   on the default branch: `git tag v0.5.0 2e9e8eb && git push origin v0.5.0`.
-   That triggers `release.yml`, whose tag/version guard will pass (version 0.5.0).
+   in-session git proxy blocks tag pushes with 403; retried once per session, same
+   result). Tag the current default-branch tip:
+   `git tag v0.5.0 ba56f11 && git push origin v0.5.0` (or the latest default tip
+   with `__version__ = "0.5.0"`). That triggers `release.yml`, whose tag/version
+   guard will pass.
 2. After the tag is pushed, verify the `release.yml` run is green and the GitHub
    Release has wheel + sdist + `SHA256SUMS` attached (see `docs/runbooks/release.md`).
 3. Enable branch protection in the GitHub UI (required check: `test`).
