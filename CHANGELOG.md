@@ -26,9 +26,9 @@ upload-artifact v7) and removes stale version pins from the docs.
   `docs/ci.md`.
 - **Local release helper**: `scripts/release-check.sh` runs the CI gates locally;
   `scripts/check_version.py` enforces tag/version match (unit-tested).
-- **Free-tier/cost guidance**: public-repo free path, private-repo $0 spending
-  cap, Linux-only rationale, and no-cost fallbacks (self-hosted runner, Jenkins,
-  Forgejo/Gitea + Woodpecker).
+- **Cost-conscious CI guidance**: small Linux-only workflows on GitHub-hosted
+  runners, short artifact retention, Actions-usage monitoring, and no-cost
+  fallbacks (self-hosted runner, Jenkins, Forgejo/Gitea + Woodpecker).
 
 ### DevOps governance & release hardening
 

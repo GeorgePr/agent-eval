@@ -7,6 +7,7 @@ importable functions against synthetic archives.
 """
 
 import hashlib
+import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -227,3 +228,71 @@ def test_ci_and_release_verify_dist():
 )
 def test_governance_and_community_files_exist(relpath):
     assert (REPO / relpath).is_file()
+
+
+# ---------------------------------------------------------------------------
+# Docs guardrails: no repo-visibility/cost comparisons; relative links resolve
+# ---------------------------------------------------------------------------
+
+_SKIP_DIRS = {".git", ".venv", ".relenv", "dist", "node_modules", "__pycache__"}
+
+# Narrow phrase list: blocks repo-visibility/billing comparisons without banning
+# ordinary uses of "public"/"private" (e.g. "Private vulnerability reporting").
+_VISIBILITY_PHRASES = re.compile(
+    r"public repo|private repo|public repositories|private repositories"
+    r"|free for public|private-repo|public-repo|public/private"
+    r"|included minutes|spending cap|spending limit",
+    re.IGNORECASE,
+)
+
+
+def _markdown_files():
+    return [
+        p for p in REPO.rglob("*.md")
+        if not any(part in _SKIP_DIRS for part in p.relative_to(REPO).parts)
+    ]
+
+
+def test_no_repo_visibility_cost_comparisons_in_markdown():
+    offenders = []
+    for path in _markdown_files():
+        for i, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
+            if _VISIBILITY_PHRASES.search(line):
+                offenders.append(f"{path.relative_to(REPO)}:{i}: {line.strip()}")
+    assert not offenders, (
+        "repo visibility/cost comparisons found in Markdown:\n" + "\n".join(offenders)
+    )
+
+
+_MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
+
+
+def _github_anchor(title: str) -> str:
+    """GitHub's heading-to-anchor rule: lowercase, drop punctuation, spaces->'-'."""
+    return re.sub(r"[^a-z0-9 _\-]", "", title.strip().lower()).replace(" ", "-")
+
+
+def test_readme_and_docs_relative_links_resolve():
+    """Relative .md links and same-file anchors must resolve. External URLs are
+    not validated (no network); cross-file anchors are checked for file existence
+    only — conservative on purpose."""
+    files = [REPO / "README.md"] + sorted((REPO / "docs").rglob("*.md"))
+    broken = []
+    for path in files:
+        text = path.read_text(errors="ignore")
+        anchors = {
+            _github_anchor(m.group(1))
+            for m in re.finditer(r"^#{1,6}\s+(.+)$", text, re.MULTILINE)
+        }
+        for m in _MD_LINK.finditer(text):
+            target = m.group(1)
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            if target.startswith("#"):
+                if target[1:] not in anchors:
+                    broken.append(f"{path.relative_to(REPO)}: broken anchor {target}")
+                continue
+            rel = target.split("#", 1)[0]
+            if not (path.parent / rel).exists():
+                broken.append(f"{path.relative_to(REPO)}: missing target {target}")
+    assert not broken, "broken relative Markdown links:\n" + "\n".join(broken)

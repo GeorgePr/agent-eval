@@ -72,9 +72,9 @@ Open-PR limits are capped (5 each) to avoid noise. How to handle these PRs:
 - **No scheduled workflows** unless a real need appears (Dependabot's schedule is
   its own budget, not Actions minutes).
 - **Job `timeout-minutes`** caps a hung run.
-- For a **private repo**, set a **$0 spending limit** (Settings → Billing) so you
-  can never be charged, and fall back to a self-hosted runner (homelab/Pi),
-  Jenkins, or Forgejo/Gitea + Woodpecker if minutes run short. See
+- Monitor Actions usage in your GitHub settings. A self-hosted runner
+  (homelab/Pi), Jenkins, or Forgejo/Gitea + Woodpecker remain optional
+  alternatives if you'd rather not use hosted runners. See
   [release-strategy.md](release-strategy.md).
 
 ## CODEOWNERS (optional)
@@ -93,6 +93,7 @@ These live in the GitHub UI and **cannot be enforced by files in the repo**:
 - [ ] Enable **Private vulnerability reporting** (Settings → Security).
 - [ ] Create the **`pypi`** environment with required reviewers (only needed if you
       publish to PyPI).
-- [ ] (Private repos) set a **$0 billing spending limit**.
+- [ ] (Optional) review Actions usage/limits in Settings if you want tighter
+      control over runner minutes.
 - [ ] (Optional) add `.github/CODEOWNERS` and require code-owner review.
 - [ ] (Optional) require signed commits.
