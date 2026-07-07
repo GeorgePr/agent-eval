@@ -4,10 +4,15 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## Current status
 
-- **v0.5.0 release-prep in progress (this session).** Goal: merge the 4
-  Dependabot PRs, prep the release on `release/v0.5.0`, PR + squash-merge it, then
-  tag `v0.5.0`. No product behavior changed; `agenteval.py` edited only to bump
-  `__version__` to `0.5.0`.
+- **In progress (this session): docs cleanup + v0.5.0 tag retry.** Goal: remove
+  repo-visibility/cost comparisons from Markdown docs, fix the broken README
+  packaging anchor, merge via squash PR after CI, then retry the previously
+  blocked `v0.5.0` tag push from the updated default-branch tip. No product
+  behavior changes; `agenteval.py` untouched.
+- **v0.5.0 release-prep (previous session).** Merged the 4 Dependabot PRs,
+  prepped the release on `release/v0.5.0`, PR #5 squash-merged (`2e9e8eb`);
+  `agenteval.py` edited only to bump `__version__` to `0.5.0`. Tag push was
+  blocked (HTTP 403 on tag refs).
 - **Branch topology note:** the repo's **default/integration branch is
   `claude/agent-regression-cli-mvp-5pkspw`** — there is **no `main`**. All PRs
   (Dependabot + release) target that branch; the task's "main" maps to it.
@@ -57,10 +62,11 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## Cost assumptions
 
-- Public repo on standard GitHub-hosted Linux runners = free (assumed acceptable).
-- Private repo: set a **$0 spending cap**; workflows kept small, Linux-only, short
-  retention. No-cost fallbacks documented: self-hosted runner, Jenkins,
-  Forgejo/Gitea + Woodpecker, or local `scripts/release-check.sh` only.
+- Small Linux-only workflows on GitHub-hosted Ubuntu runners; short artifact
+  retention; monitor Actions usage in GitHub settings. No-cost fallbacks
+  documented: self-hosted runner, Jenkins, Forgejo/Gitea + Woodpecker, or local
+  `scripts/release-check.sh` only. (Repo-visibility/cost comparisons were removed
+  from user-facing docs this session per maintainer request.)
 
 ## v0.4 summary
 
@@ -188,9 +194,9 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 - No custom HTTP request-body templates (body is `{input_key: input}`).
 - No distributed execution, dashboard, or persistent database.
 - No mypy configuration.
-- **CI/CD not yet verified on GitHub** — workflows are YAML-valid and the
-  commands they run are proven locally, but actual runner execution (Actions
-  triggers, `gh release create`, OIDC publish) must be confirmed after push.
+- **`ci.yml` is verified green on GitHub** (PR + push runs), but **`release.yml`
+  has never run** (tag push blocked so far) and OIDC publish is unexercised —
+  confirm both the first time they actually run.
 - `publish.yml` is inert until a PyPI Trusted Publisher + `pypi` environment
   are configured; PyPI publishing is otherwise manual.
 
@@ -201,7 +207,7 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
   as a required status check.
 - Enable Private vulnerability reporting (for SECURITY.md flow).
 - Create the `pypi` environment with required reviewers (only if publishing).
-- Private repos: set a **$0 billing spending limit**.
+- Optional: review Actions usage/limits in Settings.
 - Optional: `.github/CODEOWNERS`, required signed commits.
 - See `docs/repo-governance.md` for the full checklist.
 

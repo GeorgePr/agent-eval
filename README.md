@@ -29,7 +29,7 @@ uv run agenteval.py run examples/scenarios.yaml --agent examples.myagent:agent
 # first run creates the baseline (exit 0); run again to diff against it
 ```
 
-Installed as a command (see [Packaging](#packaging)), the same works as:
+Installed as a command (see [Packaging & releases](#packaging--releases)), the same works as:
 
 ```sh
 agenteval run scenarios.yaml --agent myagent:agent

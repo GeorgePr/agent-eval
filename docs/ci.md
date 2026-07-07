@@ -171,7 +171,7 @@ publish to PyPI.
 Under the workflow run's **Artifacts** section (Actions tab → the run). CI
 artifacts expire after 7 days, release artifacts after 30; the permanent copies
 live on the **GitHub Release** page for each tag. Retention is short on purpose —
-it keeps storage usage (and any private-repo billing) low.
+it keeps storage usage low.
 
 ## Why Linux-only initially
 
@@ -179,15 +179,15 @@ AgentEval is pure Python (stdlib + pyyaml). A macOS/Windows matrix would multipl
 runner minutes for little added confidence. Start Linux-only; add other OSes only
 if you actually support and test against them.
 
-## Keeping GitHub Actions free
+## Keeping Actions usage low
 
-- **Public repo:** standard Linux runners are free — nothing to do.
-- **Private repo:** included minutes/storage are finite. Set a **$0 spending
-  limit** in *Settings → Billing* so you can't be charged, keep workflows small,
-  keep artifact retention short, and avoid unnecessary `schedule:` triggers.
+- Workflows use GitHub-hosted Ubuntu runners and are intentionally small — one
+  short Linux job per run.
+- Keep artifact retention short and avoid unnecessary `schedule:` triggers.
 - Avoid macOS/Windows and large matrices unless you need them.
+- Monitor Actions usage in your GitHub settings.
 
-## If GitHub Actions isn't free enough
+## Running the pipeline elsewhere
 
 The pipeline is just `uv` + `ruff` + `pytest` commands, so it runs anywhere:
 

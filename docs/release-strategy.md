@@ -20,14 +20,11 @@ On every push and pull request, [`ci.yml`](../.github/workflows/ci.yml):
 8. Uploads `dist/*.whl`, `dist/*.tar.gz`, and `dist/SHA256SUMS` as build
    artifacts with **7-day** retention.
 
-## Free usage boundary
+## Cost-conscious usage
 
-- **Public repo:** GitHub Actions on standard Linux hosted runners is free, so
-  this setup runs at no cost.
-- **Private repo:** included minutes and storage are finite. Keep workflows
-  small (this one is a single Linux job), keep artifact retention short, and set
-  a spending limit of **$0** in *Settings → Billing → Spending limits* so you
-  can never be charged unexpectedly.
+- **Small workflows on GitHub-hosted Ubuntu runners.** The whole pipeline is a
+  single Linux job that finishes in a couple of minutes; monitor Actions usage in
+  your GitHub settings if you want visibility into runner minutes.
 - **Linux only, single Python (3.12).** No macOS/Windows matrix — those runners
   cost several times more minutes and add little for a pure-Python, stdlib+pyyaml
   tool. Expand the matrix later only if you actually support more environments.
@@ -77,8 +74,8 @@ Step-by-step procedures live in [runbooks/](runbooks/):
 
 ## No-cost fallback tools
 
-If GitHub Actions is not free enough for your situation (e.g. a private repo
-with heavy usage), the same commands run anywhere:
+If you prefer not to run this on GitHub Actions at all, the same commands run
+anywhere:
 
 - **Local only:** `scripts/release-check.sh` before every tag, then build and
   attach artifacts by hand. No CI service required at all.
