@@ -168,7 +168,7 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 ## Docs cleanup + tag retry outcome (latest session)
 
 - **Docs cleanup PR #6 squash-merged** (`ba56f11`) after CI green: removed
-  public/private repo cost comparisons from `docs/release-strategy.md`,
+  repo-visibility cost comparisons from `docs/release-strategy.md`,
   `docs/ci.md`, `docs/repo-governance.md`, `CHANGELOG.md`, `claude.md`;
   replaced with neutral wording (hosted Ubuntu runners, small workflows, short
   retention, monitor Actions usage, self-hosted/Jenkins/Woodpecker optional).
