@@ -42,6 +42,10 @@ On every push and pull request, [`ci.yml`](../.github/workflows/ci.yml):
   manual [`publish.yml`](../.github/workflows/publish.yml) that uses **Trusted
   Publishing / OIDC** only — no API tokens are stored as secrets. See
   [publishing.md](publishing.md).
+- **History lives in tags and Releases, not branches.** The `release/vX.Y.Z`
+  branch is temporary; delete it (and any merged short-lived branch) after the
+  release PR merges. Tags and their GitHub Releases are the permanent record. See
+  [repo-governance.md](repo-governance.md#branch-lifecycle).
 
 ## Versioning
 

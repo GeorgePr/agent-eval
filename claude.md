@@ -4,14 +4,19 @@ Concise, current maintainer notes. Keep useful, not a transcript.
 
 ## Current status
 
-- **Docs cleanup done; v0.5.0 tag push STILL BLOCKED (this session).**
-  Repo-visibility/cost comparisons removed from Markdown docs and the broken
-  README packaging anchor fixed via PR #6 (squash-merged after CI → `ba56f11`).
-  Two docs guardrail tests added (visibility phrases; relative-link/anchor
-  checker) — 200 tests passing. The `v0.5.0` tag was recreated locally at
-  `ba56f11` and the push retried **once**: same **HTTP 403** from the git proxy
-  on tag refs. No remote tag, `release.yml` still 0 runs, no GitHub Release.
-  No product behavior changes; `agenteval.py` untouched.
+- **v0.5.0 RELEASED ✅ (verified this session).** The maintainer pushed the
+  `v0.5.0` tag (`f24b8ee`) from their own machine; `release.yml` run #1 succeeded
+  (tag/version guard + tests + build + selftest + verify + checksums), and the
+  **GitHub Release `v0.5.0`** exists (not draft/prerelease) with all three assets:
+  `agenteval-0.5.0-py3-none-any.whl`, `agenteval-0.5.0.tar.gz`, `SHA256SUMS`.
+- **Post-release hygiene in progress (this session).** Documented branch
+  lifecycle (tags/Releases are the historical record; short-lived + release
+  branches deleted after merge) and default-branch normalization to `main`;
+  cleaning up merged branches. No product behavior changes; `agenteval.py` untouched.
+- **⚠ Default-branch normalization to `main` cannot be done from here** — no MCP
+  tool sets the repo default branch and `gh` is unavailable. Documented as a
+  manual GitHub-UI follow-up (Settings → Branches → rename). The default branch
+  remains `claude/agent-regression-cli-mvp-5pkspw`.
 - **v0.5.0 release-prep (previous session).** Merged the 4 Dependabot PRs,
   prepped the release on `release/v0.5.0`, PR #5 squash-merged (`2e9e8eb`);
   `agenteval.py` edited only to bump `__version__` to `0.5.0`. Tag push was

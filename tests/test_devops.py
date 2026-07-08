@@ -296,3 +296,16 @@ def test_readme_and_docs_relative_links_resolve():
             if not (path.parent / rel).exists():
                 broken.append(f"{path.relative_to(REPO)}: missing target {target}")
     assert not broken, "broken relative Markdown links:\n" + "\n".join(broken)
+
+
+# ---------------------------------------------------------------------------
+# Branch-hygiene docs: tags/Releases are the historical record, not branches
+# ---------------------------------------------------------------------------
+
+def test_governance_documents_branch_lifecycle():
+    gov = (REPO / "docs" / "repo-governance.md").read_text()
+    assert "## Branch lifecycle" in gov
+    # Historical versions are preserved by tags + GitHub Releases.
+    assert "tags" in gov.lower() and "release" in gov.lower()
+    # Release branches are not kept as archives.
+    assert "not kept as archives" in gov.lower()
