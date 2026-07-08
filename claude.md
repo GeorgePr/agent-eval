@@ -221,39 +221,44 @@ json_path_contains, json_path_regex. Optional stubs: semantic, judge.
 - No custom HTTP request-body templates (body is `{input_key: input}`).
 - No distributed execution, dashboard, or persistent database.
 - No mypy configuration.
-- **`ci.yml` is verified green on GitHub** (PR + push runs), but **`release.yml`
-  has never run** (tag push blocked so far) and OIDC publish is unexercised —
-  confirm both the first time they actually run.
+- **`ci.yml` and `release.yml` are both verified green on GitHub.** `release.yml`
+  run #1 (tag `v0.5.0` → `f24b8ee`) succeeded end to end. OIDC publish
+  (`publish.yml`) is still unexercised.
 - `publish.yml` is inert until a PyPI Trusted Publisher + `pypi` environment
   are configured; PyPI publishing is otherwise manual.
+- **From this environment, the git proxy blocks tag pushes AND branch-ref
+  deletions (HTTP 403), and no MCP tool deletes branches or sets the default
+  branch.** So remote branch cleanup and default-branch normalization are
+  maintainer/UI actions, not automatable from here.
 
-## Manual GitHub settings still required (not enforceable by repo files)
+## Post-release branch state (as of this session)
 
-- Branch protection on the default branch
-  (`claude/agent-regression-cli-mvp-5pkspw`; no `main` exists); mark **`test`**
-  as a required status check.
-- Enable Private vulnerability reporting (for SECURITY.md flow).
-- Create the `pypi` environment with required reviewers (only if publishing).
-- Optional: review Actions usage/limits in Settings.
-- Optional: `.github/CODEOWNERS`, required signed commits.
-- See `docs/repo-governance.md` for the full checklist.
+- **Kept:** `claude/agent-regression-cli-mvp-5pkspw` — the current default branch.
+- **Should be deleted (merged, no open PRs) but deletion is blocked here:**
+  `release/v0.5.0` (#5), `docs/release-doc-cleanup-v050` (#6),
+  `docs/claude-md-tag-blocker` (#7), `docs/post-release-branch-hygiene` (#8).
+  All squash-merged; content preserved in default-branch history + tag/Release.
+  Local copies were deleted; the **remote** ones await manual deletion.
+- Dependabot branches (#1–#4) were already deleted at merge time.
 
-## Manual follow-up still required
+## Manual follow-up still required (GitHub UI — not automatable from here)
 
-1. **Push the `v0.5.0` tag from an environment allowed to push tags** (the
-   in-session git proxy blocks tag pushes with 403; retried once per session, same
-   result). Tag the current default-branch tip:
-   `git tag v0.5.0 ba56f11 && git push origin v0.5.0` (or the latest default tip
-   with `__version__ = "0.5.0"`). That triggers `release.yml`, whose tag/version
-   guard will pass.
-2. After the tag is pushed, verify the `release.yml` run is green and the GitHub
-   Release has wheel + sdist + `SHA256SUMS` attached (see `docs/runbooks/release.md`).
-3. Enable branch protection in the GitHub UI (required check: `test`).
+1. **Delete the 4 merged remote branches** listed above (git push --delete and
+   MCP are both blocked here): `release/v0.5.0`,
+   `docs/release-doc-cleanup-v050`, `docs/claude-md-tag-blocker`,
+   `docs/post-release-branch-hygiene`.
+2. **Normalize the default branch to `main`** — Settings → Branches → rename
+   `claude/agent-regression-cli-mvp-5pkspw` to `main` (preserves history,
+   retargets PRs, redirects refs), then re-point branch protection at `main`.
+3. **Enable branch protection** on the default branch; required check: **`test`**.
+   Enable Private vulnerability reporting; create the `pypi` environment only if
+   publishing. See `docs/repo-governance.md` for the full checklist.
 4. `publish.yml` stays inert until a PyPI Trusted Publisher + `pypi` environment
    are configured; do not enable automatic PyPI publishing.
 
 ## Next recommended step
 
-Complete the tag push above to finish the v0.5.0 release, then **do not add
-product features** until that first real release workflow has been exercised;
-after that, dogfood against a real agent and capture the first regression case study.
+Do the manual GitHub-UI cleanup above (delete merged branches, rename default to
+`main`, set branch protection). Then **do not add product features** — dogfood
+AgentEval against a real agent repo and capture the first real regression case
+study before expanding scope.
