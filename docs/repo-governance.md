@@ -6,11 +6,44 @@ requires paid GitHub features; some settings are configured once in the GitHub U
 
 ## Branch strategy
 
-- **`main` is always releasable.** Every commit on `main` should pass CI.
+- **The default branch is always releasable.** Every commit on it should pass CI.
+  The desired steady-state name for the default/integration branch is **`main`**;
+  see [Default branch normalization](#default-branch-normalization) if the repo
+  still uses an older generated default-branch name.
 - **Feature branches** for all changes (e.g. `fix/…`, `docs/…`, `ci/…`).
 - Once the repo is public or shared, **require a PR before merge** — no direct
-  pushes to `main`.
-- Tags (`vX.Y.Z`) are cut from `main` after checks pass.
+  pushes to the default branch.
+- Tags (`vX.Y.Z`) are cut from the default branch after checks pass.
+
+## Branch lifecycle
+
+- **Short-lived branches** — feature, `docs/…`, `ci/…`/devops, and
+  `release/vX.Y.Z` branches — are **deleted after their PR is squash-merged**.
+- **Dependabot branches** are deleted after merge (Dependabot does this itself;
+  otherwise delete them once merged).
+- **Release branches are not kept as archives.** A `release/vX.Y.Z` branch is
+  temporary scaffolding for the release PR; delete it once the PR is merged and
+  the tag is created.
+- **Historical versions live in tags and GitHub Releases, not branches.** Tags
+  (`vX.Y.Z`) and their Releases (wheel + sdist + `SHA256SUMS`) are the permanent
+  record; keep them indefinitely. Do **not** keep per-version branches.
+- **Maintenance branches** (e.g. `maintenance/v0.5`) are created **only** when an
+  older release line is actively supported with backports. None exists today.
+
+## Default branch normalization
+
+If the repo's default branch still uses an older generated name (this repo began
+on `claude/agent-regression-cli-mvp-5pkspw`), normalize it to `main` after a
+successful release:
+
+- Prefer GitHub's **Settings → Branches → rename** on the default branch — it
+  preserves history, updates the default pointer, retargets open PRs, and
+  redirects old refs in one step.
+- Then re-point branch protection at `main` (required check: `test`).
+- Only delete the old branch name once `main` is confirmed as the default and no
+  open PR targets the old name.
+
+This is a GitHub-UI action and cannot be performed from repo files.
 
 ## Recommended branch protection
 
@@ -88,7 +121,9 @@ Code Owners" in branch protection.
 
 These live in the GitHub UI and **cannot be enforced by files in the repo**:
 
-- [ ] Branch protection / ruleset on `main` (see above).
+- [ ] Normalize the default branch to `main` if it still uses an older generated
+      name (Settings → Branches → rename); see above.
+- [ ] Branch protection / ruleset on the default branch (`main`; see above).
 - [ ] Mark **`test`** as a required status check.
 - [ ] Enable **Private vulnerability reporting** (Settings → Security).
 - [ ] Create the **`pypi`** environment with required reviewers (only needed if you

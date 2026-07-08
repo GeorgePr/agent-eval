@@ -62,6 +62,9 @@ Only after a PyPI Trusted Publisher and the `pypi` environment are configured
 
 ## Post-release checklist
 
+- [ ] Delete the merged `release/vX.Y.Z` branch and any other merged short-lived
+      branches (the tag + GitHub Release are the permanent record). See
+      [repo-governance.md](../repo-governance.md#branch-lifecycle).
 - [ ] Add a fresh `Unreleased` section to `CHANGELOG.md`.
 - [ ] Update `claude.md` (current version, last released commit).
 - [ ] Announce if you have users. If something is wrong, see
